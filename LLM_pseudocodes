@@ -1,0 +1,345 @@
+LLaMA Section
+
+Overview
+The LLM Processing Layer transforms transcript chunks into structured, agent-readable outputs in real time. It is responsible for:
+Live call summarization
+Rolling client history summarization
+Promotion surfacing based on call context and client profile
+The layer uses a LLaMA-based LLM and operates on incremental transcript chunks to meet latency and usability requirements during live calls.
+
+B. Pseudocode
+
+1) Master Entry Point (Per-Chunk Trigger)
+[Redis → LLaMA Processing Layer → UI + SQL]
+FUNCTION ProcessNewChunk(client_id):
+
+    # A) Pull newest transcript chunk from Redis (2–3s rolling window)
+    chunk_text = Redis.PullTranscriptChunk(client_id)
+
+    # B) Pull current state needed for rolling updates
+    client_history_summary = SQL.GetClientHistorySummary(client_id)
+    client_profile = SQL.GetClientProfile(client_id)
+    promotion_catalog = SQL.GetActivePromotions()  # includes promo_id, name, expiry, description, fulfillment_steps
+
+    # C) Run LLaMA processing layer
+    result = LLaMA_ProcessingLayer(
+                 client_id,
+                 chunk_text,
+                 client_profile,
+                 client_history_summary,
+                 promotion_catalog
+             )
+
+    # D) Persist rolling updates (diagram: red arrows back into SQL)
+    SQL.UpdateClientHistorySummary(client_id, result.client_history_summary)
+    Redis.SetRollingSummary(client_id, result.call_rolling_summary)  # optional, for fast UI refresh
+
+    # E) Push live updates to UI
+    UI.DisplayLive(
+        client_id = client_id,
+        live_call_summary = result.call_rolling_summary,
+        client_history_summary = result.client_history_summary,
+        promotions = result.promotion_recommendations
+    )
+
+    RETURN result
+
+
+################################################################################################################################################################
+################################################################################################################################################################
+
+
+2) LLaMA Processing Layer (Master Pipeline)
+[Calls: Call Summarizer + Client Summarizer + Promoter]
+FUNCTION LLaMA_ProcessingLayer(
+         client_id,
+         chunk_text,
+         client_profile,
+         client_history_summary,
+         promotion_catalog
+    ):
+
+    # 1) Call Summarizer: summarize this chunk (and optionally update rolling call summary)
+    call_summary_object = LLaMA_CallSummarizer_Module(
+                              chunk_text = chunk_text,
+                              current_call_summary = Redis.GetRollingSummary(client_id)  # optional
+                         )
+
+    # 2) Client Summarizer: update rolling client history summary in SQL
+    updated_client_history_object = LLaMA_ClientSummarizer_Module(
+                                        chunk_text = chunk_text,
+                                        client_profile = client_profile,
+                                        current_client_history_summary = client_history_summary
+                                   )
+
+    # 3) Promoter: surface relevant promotions based on chunk + client context
+    promo_object = LLaMA_Promoter_Module(
+                       chunk_text = chunk_text,
+                       client_profile = client_profile,
+                       promotion_catalog = promotion_catalog
+                  )
+
+    RETURN {
+        "call_rolling_summary": call_summary_object,
+        "client_history_summary": updated_client_history_object,
+        "promotion_recommendations": promo_object
+    }
+
+
+
+################################################################################################################################################################
+################################################################################################################################################################
+
+
+
+3) Call Summarizer Module
+[Input: chunk_text (+ optional rolling call summary) → Output: structured call summary]
+FUNCTION LLaMA_CallSummarizer_Module(chunk_text, current_call_summary OPTIONAL):
+
+    prompt = """
+    You are a TD customer-service call summarizer.
+
+    Summarize the NEW call segment in 3–4 bullet points.
+    Each bullet MUST include:
+    • client_issue
+    • agent_action
+    • next_step (if any)
+
+    After bullets, write a SHORT CRM-ready paragraph (2–3 sentences).
+    Keep it factual and concise.
+
+    Current Rolling Call Summary (if provided; do NOT repeat it):
+    {current_call_summary}
+
+    New Transcript Segment:
+    {chunk_text}
+
+    Output format:
+    1. ...
+    2. ...
+    3. ...
+    4. (optional)
+    Paragraph: ...
+    """
+
+    llama_raw = LLaMA.generate(prompt)
+
+    # Standardize into predictable structure for UI/DB
+    call_summary_object = CleanSummaryFormat(llama_raw)
+
+    RETURN call_summary_object
+
+
+################################################################################################################################################################
+################################################################################################################################################################
+
+
+4) Client Summarizer Module (Rolling Client History)
+[Diagram “Client Summarizer”]
+[Input: chunk_text + client_profile + current_client_history_summary → Output: updated client history JSON]
+FUNCTION LLaMA_ClientSummarizer_Module(
+         chunk_text,
+         client_profile,
+         current_client_history_summary
+    ):
+
+    prompt = """
+    You are a TD client history summarizer.
+
+    Update the client's ongoing history summary using:
+    • the new call segment
+    • the client profile
+    • the existing stored client history summary
+
+    Requirements:
+    1) Keep it concise and stable over time (avoid rewriting everything).
+    2) Track ongoing issues and unresolved items.
+    3) Only include factual information supported by inputs.
+    4) If the new segment adds nothing new, keep the summary unchanged.
+
+    Client Profile:
+    {client_profile}
+
+    Existing Client History Summary:
+    {current_client_history_summary}
+
+    New Transcript Segment:
+    {chunk_text}
+
+    Output format (JSON only):
+    {
+      "history_summary": "..."
+    }
+    """
+
+    llama_raw = LLaMA.generate(prompt)
+
+    history_object = ParseJsonOrFallback(
+        llama_raw,
+        fallback_object = { "history_summary": llama_raw }
+    )
+
+    RETURN history_object
+
+
+################################################################################################################################################################
+################################################################################################################################################################
+
+
+5) Promotion Module (Single Pseudocode Only — UI-ready output)
+[Diagram “Promoter”]
+[Input: chunk_text + client_profile + promotion_catalog → Output: top promotions + details]
+
+FUNCTION LLaMA_Promoter_Module(chunk_text, client_profile, promotion_catalog):
+
+    prompt = """
+    You are a TD promotion assistant.
+
+    Using ONLY the promotion catalog provided, surface up to 2 MOST relevant promotions
+    for the current call segment.
+
+    Rules:
+    1) You must select promotions ONLY from the catalog (do not invent promotions).
+    2) If none apply, return no_relevant_flag = true and an empty list.
+    3) For each recommendation, include:
+       • promo_id
+       • name
+       • expiry
+       • description
+       • fulfillment_steps
+       • reason (tie directly to transcript or client profile)
+
+    New Transcript Segment:
+    {chunk_text}
+
+    Client Profile:
+    {client_profile}
+
+    Promotion Catalog (ONLY source of truth):
+    {promotion_catalog}
+
+    Output format (JSON only):
+    {
+      "recommendations": [
+        {
+          "promo_id": "...",
+          "name": "...",
+          "expiry": "...",
+          "description": "...",
+          "fulfillment_steps": "...",
+          "reason": "..."
+        }
+      ],
+      "no_relevant_flag": true
+    }
+    """
+
+    llama_raw = LLaMA.generate(prompt)
+
+    promo_object = ParseJsonOrFallback(
+        llama_raw,
+        fallback_object = {
+          "recommendations": [],
+          "no_relevant_flag": true
+        }
+    )
+
+    RETURN promo_object
+
+
+
+################################################################################################################################################################
+################################################################################################################################################################
+
+
+6) Summary Cleaning / Standardization
+[Used by Call Summarizer to guarantee structure]
+FUNCTION CleanSummaryFormat(raw_summary_text):
+
+    cleaning_prompt = """
+    You are a formatting assistant for TD call summaries.
+
+    Convert the rough summary into STRICT JSON.
+
+    Requirements:
+    1) Extract 3–4 bullets with fields:
+       • client_issue
+       • agent_action
+       • next_step (nullable)
+    2) Produce 1 short CRM paragraph (2–3 sentences).
+    3) No extra headings or commentary.
+    4) Output JSON only.
+
+    Return JSON:
+    {
+      "bullets": [
+        {
+          "client_issue": "...",
+          "agent_action": "...",
+          "next_step": "..."
+        }
+      ],
+      "crm_paragraph": "..."
+    }
+
+    Rough summary:
+    {raw_summary_text}
+    """
+
+    cleaned_json_text = LLaMA.generate(cleaning_prompt)
+
+    TRY:
+        summary_object = JSON.parse(cleaned_json_text)
+    EXCEPT:
+        summary_object = {
+            "bullets": [],
+            "crm_paragraph": cleaned_json_text
+        }
+
+    RETURN summary_object
+
+
+
+################################################################################################################################################################
+################################################################################################################################################################
+
+
+
+7) End-of-Call Finalization (Final Summary Panel)
+[Runs once when the call ends]
+FUNCTION FinalizeCall(client_id):
+
+    # Option A: final summary from full transcript (if stored)
+    full_transcript = SQL.GetFullTranscript(client_id)
+
+    prompt = """
+    You are a TD call summarizer.
+
+    Write a FINAL call summary for agent case notes.
+    Include:
+    • call reason
+    • key actions taken
+    • outcome / resolution status
+    • unresolved items / follow-up
+
+    Transcript:
+    {full_transcript}
+
+    Output format (JSON only):
+    {
+      "final_summary": "..."
+    }
+    """
+
+    llama_raw = LLaMA.generate(prompt)
+
+    final_object = ParseJsonOrFallback(
+        llama_raw,
+        fallback_object = { "final_summary": llama_raw }
+    )
+
+    SQL.StoreFinalCallSummary(client_id, final_object)
+
+    UI.DisplayFinalSummary(client_id, final_object)
+
+    RETURN final_object
