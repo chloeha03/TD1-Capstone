@@ -1,0 +1,87 @@
+version: '3.8'
+
+services:
+  # --- Database (Postgres) ---
+  db:
+    image: postgres:15-alpine
+    container_name: td_db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password123
+      POSTGRES_DB: td_poc
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # --- Healthcheck prevents apps from connecting too early ---
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    # ------------------------------------------------------------------
+
+  # --- Cache & State (Redis) ---
+  redis:
+    image: redis:alpine
+    container_name: td_redis
+    ports:
+      - "6379:6379"
+    # --- Healthcheck for Redis ---------------------------------
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    # ------------------------------------------------------------------
+
+  # --- Transcription Service ---
+  transcription_svc:
+    build: ./transcription
+    container_name: td_transcription
+    restart: on-failure  # <--- Keeps trying if Redis isn't ready yet
+    environment:
+      - REDIS_HOST=redis
+    ports:
+      - "8001:8000"
+    depends_on:
+      redis:
+        condition: service_healthy # <--- Waits for Redis "healthcheck" to pass
+
+  # --- Summarizer Service ---
+  summarizer_svc:
+    build: ./summarizer
+    container_name: td_summarizer
+    restart: on-failure  # <--- Keeps trying if DB crashes
+    environment:
+      - REDIS_HOST=redis
+      - DB_HOST=db
+      - DB_NAME=td_poc
+      - DB_USER=postgres
+      - DB_PASS=password123
+    ports:
+      - "8002:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy # <--- Waits for Postgres to actually be ready
+
+  # For testing database interactions
+  # docker-compose --profile test up --build tester
+  tester:
+    build:
+      context: .
+      dockerfile: tests/Dockerfile
+    environment:
+      - DB_HOST=db
+      - REDIS_HOST=redis
+      - DB_PASS=password123
+    depends_on:
+      - db
+      - redis
+    profiles: ["test"]
+
+volumes:
+  postgres_data:
