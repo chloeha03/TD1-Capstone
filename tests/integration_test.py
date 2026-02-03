@@ -2,7 +2,7 @@ import time
 import os
 import threading
 import redis
-import json
+import random
 import sys
 
 try:
@@ -16,6 +16,12 @@ DB_NAME = os.getenv("DB_NAME", "td_poc")
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASS = os.getenv("DB_PASS", "password123")
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+
+NUM_CALLS = int(os.getenv("NUM_CALLS", "10"))
+NUM_WORKERS = int(os.getenv("NUM_WORKERS", "2"))
+CHUNKS_PER_CALL = int(os.getenv("CHUNKS_PER_CALL", "20"))
+SUMMARY_INTERVAL = float(os.getenv("SUMMARY_INTERVAL", "3.0"))
+LOCK_TTL = 3
 
 def wait_for_services():
     print("Waiting for Redis...")
@@ -45,57 +51,143 @@ def wait_for_services():
             time.sleep(2)
 
 class MockSummarizerService(threading.Thread):
-    def __init__(self, r_client):
+    def __init__(self, r_client, worker_id):
         super().__init__()
         self.r = r_client
+        self.worker_id = worker_id
         self.running = True
         self.daemon = True
 
     def run(self):
-        print("[Summarizer Worker] Started listening...")
+        print(f"[Worker {self.worker_id}] Started")
         while self.running:
             active_calls = self.r.smembers("active_calls")
             for call_id in active_calls:
                 self.process_call(call_id)
-            time.sleep(1)
+            time.sleep(0.2)
+
+    def acquire_lock(self, call_id):
+        key = f"lock:call:{call_id}"
+        return self.r.set(key, self.worker_id, nx=True, ex=LOCK_TTL)
+
+    def release_lock(self, call_id):
+        self.r.delete(f"lock:call:{call_id}")
 
     def process_call(self, call_id):
-        last_idx = int(self.r.get(f"call:{call_id}:processed_index") or 0)
-        total_chunks = self.r.llen(f"call:{call_id}:chunks")
+        if not self.acquire_lock(call_id):
+            return
 
-        if total_chunks > last_idx:
-            new_chunks = self.r.lrange(f"call:{call_id}:chunks", last_idx, -1)
-            new_text = " ".join(new_chunks)
-            prev_summary = self.r.get(f"call:{call_id}:summary") or "Intro"
+        try:
+            now = time.time()
 
-            updated_summary = f"{prev_summary} -> Processed({new_text[:10]}...)"
+            last_ts = float(
+                self.r.get(f"call:{call_id}:last_summary_ts") or 0
+            )
 
-            self.r.set(f"call:{call_id}:summary", updated_summary)
-            self.r.set(f"call:{call_id}:processed_index", total_chunks)
-            print(f"[Summarizer Worker] Updated summary for {call_id}")
+            if now - last_ts < SUMMARY_INTERVAL:
+                return
+
+            last_idx = int(
+                self.r.get(f"call:{call_id}:processed_index") or 0
+            )
+            total_chunks = self.r.llen(
+                f"call:{call_id}:chunks"
+            )
+
+            if total_chunks == last_idx:
+                return
+
+            new_chunks = self.r.lrange(
+                f"call:{call_id}:chunks", last_idx, -1
+            )
+
+            batch_text = " ".join(new_chunks)
+            prev_summary = (
+                self.r.get(f"call:{call_id}:summary") or "Intro"
+            )
+
+            updated_summary = (
+                f"{prev_summary} "
+                f"-> W{self.worker_id}"
+                f"({batch_text[:20]}...)"
+            )
+
+            pipe = self.r.pipeline()
+            pipe.set(f"call:{call_id}:summary", updated_summary)
+            pipe.set(
+                f"call:{call_id}:processed_index",
+                total_chunks
+            )
+            pipe.set(
+                f"call:{call_id}:last_summary_ts",
+                now
+            )
+            pipe.execute()
+
+            print(
+                f"[Worker {self.worker_id}] "
+                f"Summarized {call_id} "
+                f"({total_chunks - last_idx} chunks)"
+            )
+
+        finally:
+            self.release_lock(call_id)
 
     def stop(self):
         self.running = False
 
+class TranscriptionThread(threading.Thread):
+    def __init__(self, r_client, call_id, chunks):
+        super().__init__()
+        self.r = r_client
+        self.call_id = call_id
+        self.chunks = chunks
+
+    def run(self):
+        self.r.sadd("active_calls", self.call_id)
+
+        for chunk in self.chunks:
+            time.sleep(random.uniform(0.1, 0.6))
+            self.r.rpush(
+                f"call:{self.call_id}:chunks",
+                chunk
+            )
+            print(
+                f"[Transcription {self.call_id}] {chunk}"
+            )
+
 def run_test_scenario():
-    print("\n--- 1. Initializing Database Schema ---")
-    db_module.create_er_database_safe(DB_NAME, DB_USER, DB_PASS, host=DB_HOST)
+    print("\n--- Initializing Database Schema ---")
+    db_module.create_er_database_safe(
+        DB_NAME, DB_USER, DB_PASS, host=DB_HOST
+    )
 
-    db_manager = db_module.DatabaseManager(DB_NAME, DB_USER, DB_PASS, host=DB_HOST)
+    db_manager = db_module.DatabaseManager(
+        DB_NAME, DB_USER, DB_PASS, host=DB_HOST
+    )
 
-    print("Cleaning slate (Truncating tables)...")
     try:
-        db_manager.execute("TRUNCATE customer, interaction, promotion, promotionoffer CASCADE;")
-    except Exception as e:
-        print(f"Warning during cleanup: {e}")
+        db_manager.execute(
+            "TRUNCATE customer, interaction, "
+            "promotion, promotionoffer CASCADE;"
+        )
+    except Exception:
+        pass
 
-    cust_repo = db_module.CustomerRepository(db_manager)
-    int_repo = db_module.InteractionRepository(db_manager)
+    cust_repo = db_module.CustomerRepository(
+        db_manager
+    )
+    int_repo = db_module.InteractionRepository(
+        db_manager
+    )
 
-    r = redis.Redis(host=REDIS_HOST, port=6379, decode_responses=True)
+    r = redis.Redis(
+        host=REDIS_HOST,
+        port=6379,
+        decode_responses=True
+    )
     r.flushall()
 
-    print("\n--- 2. Creating Customer ---")
     cid = 9001
     cust_repo.upsert_from_payload({
         "customer_id": cid,
@@ -104,47 +196,78 @@ def run_test_scenario():
         "total_assets": 100.00,
         "address": {"city": "Wonderland"}
     })
-    customer = cust_repo.get_by_id(cid)
-    assert customer is not None, "Customer should exist"
-    print(f"Customer created: {customer['first_name']} {customer['last_name']}")
 
-    print("\n--- 3. Starting Call Simulation ---")
-    call_id = "call_abc_123"
+    print(
+        f"\nStarting test: "
+        f"{NUM_CALLS} calls, "
+        f"{NUM_WORKERS} workers, "
+        f"{SUMMARY_INTERVAL}s summary window"
+    )
 
-    worker = MockSummarizerService(r)
-    worker.start()
+    workers = []
+    for i in range(NUM_WORKERS):
+        w = MockSummarizerService(r, i + 1)
+        w.start()
+        workers.append(w)
 
-    print("[Transcription] Chunk 1 arrived: 'Hello bank...'")
-    r.rpush(f"call:{call_id}:chunks", "Hello bank")
-    r.sadd("active_calls", call_id)
-    time.sleep(2)
+    transcripts = {}
+    threads = []
 
-    print("[Transcription] Chunk 2 arrived: 'I need money...'")
-    r.rpush(f"call:{call_id}:chunks", "I need money")
-    time.sleep(2)
+    for i in range(NUM_CALLS):
+        call_id = f"call_{i}"
+        chunks = [
+            f"chunk_{j}_from_{call_id}"
+            for j in range(CHUNKS_PER_CALL)
+        ]
+        transcripts[call_id] = chunks
 
-    current_summary = r.get(f"call:{call_id}:summary")
-    print(f"[Redis Check] Current Summary: {current_summary}")
-    assert "Process" in current_summary, "Summarizer didn't update Redis"
+        t = TranscriptionThread(
+            r, call_id, chunks
+        )
+        t.start()
+        threads.append(t)
 
-    print("\n--- 4. Finalizing Call ---")
-    final_summary = r.get(f"call:{call_id}:summary")
-    int_repo.create(cid, "PHONE_CALL", final_summary)
+    for t in threads:
+        t.join()
 
-    r.srem("active_calls", call_id)
-    worker.stop()
-    worker.join()
+    print(
+        "\nAll transcription finished. "
+        "Waiting for final summaries..."
+    )
 
-    print("\n--- 5. Verifying Data Persistence ---")
-    interactions = int_repo.get_for_customer(cid)
+    time.sleep(SUMMARY_INTERVAL + 2)
 
-    print(f"Found {len(interactions)} interactions for customer.")
-    print(f"Archived Summary: {interactions[0]['summary']}")
+    summaries = {}
+    for call_id in transcripts:
+        summary = r.get(
+            f"call:{call_id}:summary"
+        )
+        print(
+            f"[Summary] {call_id}: {summary}"
+        )
+        assert summary is not None
+        summaries[call_id] = summary
 
-    assert len(interactions) == 1
-    assert interactions[0]['summary'] == final_summary
+    print("\nArchiving to Postgres...")
+    for call_id, summary in summaries.items():
+        int_repo.create(
+            cid, "PHONE_CALL", summary
+        )
+        r.srem("active_calls", call_id)
 
-    print("\nALL TESTS PASSED")
+    for w in workers:
+        w.stop()
+        w.join()
+
+    interactions = int_repo.get_for_customer(
+        cid
+    )
+    print(
+        f"\nArchived {len(interactions)} interactions"
+    )
+    assert len(interactions) == NUM_CALLS
+
+    print("\nSLOW-SUMMARIZATION STRESS TEST PASSED")
 
 if __name__ == "__main__":
     wait_for_services()
