@@ -12,7 +12,7 @@ from faster_whisper import WhisperModel
 # Settings
 samplerate = 16000
 block_duration = 0.5  # seconds
-chunk_duration = 2    # seconds #if stop talking for 2 seconds, then it will stop transcribing
+chunk_duration = 2    # seconds 
 channels = 1
 
 frames_per_block = int(samplerate * block_duration)
