@@ -16,32 +16,31 @@ To run transcription:
 - pip install sounddevice numpy
 
 
-To run LLM:\\
+To run LLM:<br>
 To run the LLaMA summarization module, you must authenticate with Hugging Face in order to download the gated Meta LLaMA model weights.
 - Login Hugging Face and request access to "Meta's Llama 3.1 models & evals"
 - You will be approved after several minutes
-- Create a Hugging Face access token (Read permission):
-Settings → Access Tokens → New Token
+- Create a Hugging Face access token (Read permission):<br>
+**Settings → Access Tokens → New Token**
 
-You need to put this token when you run:
-from huggingface_hub import notebook_login
-notebook_login()
+- You need to put this token when you run:<br>
+**from huggingface_hub import notebook_login<br>
+notebook_login()**
 
-- run the demo summarization pipeline:
-demo_text = """
-Toronto is the capital city of the Canadian province of Ontario.
-It is the most populous city in Canada and a global center for business.
-The CN Tower is one of its most iconic landmarks.
-"""
+- run the demo summarization pipeline:<br>
+**demo_text = """<br>
+Toronto is the capital city of the Canadian province of Ontario.<br>
+It is the most populous city in Canada and a global center for business.<br>
+The CN Tower is one of its most iconic landmarks.<br>
+"""<br>
+final_result = summarize_long_text(demo_text, chunk_size=200, overlap=30)<br>
+print(final_result)<br>**
 
-final_result = summarize_long_text(demo_text, chunk_size=200, overlap=30)
-print(final_result)
-
-- Expected output (Has been tested):
-{
-  "summary": "...",
-  "key_points": ["...", "..."]
-}
+- Expected output (Has been tested):<br>
+**{<br>
+  "summary": "...",<br>
+  "key_points": ["...", "..."]<br>
+}**
 
 
 
