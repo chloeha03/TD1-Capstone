@@ -1,3 +1,5 @@
+# brew install ffmpeg
+# brew install pkg-config
 # pip install faster-whisper
 # pip install sounddevice numpy
 
