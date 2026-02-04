@@ -15,7 +15,8 @@ To run transcription:
 - pip install faster-whisper
 - pip install sounddevice numpy
 
-To run LLM:
+
+To run LLM:\\
 To run the LLaMA summarization module, you must authenticate with Hugging Face in order to download the gated Meta LLaMA model weights.
 - Login Hugging Face and request access to "Meta's Llama 3.1 models & evals"
 - You will be approved after several minutes
