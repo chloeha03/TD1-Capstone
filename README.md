@@ -18,7 +18,7 @@ To run transcription:
 
 To run LLM:<br>
 To run the LLaMA summarization module, you must authenticate with Hugging Face in order to download the gated Meta LLaMA model weights.
-- Login Hugging Face and request access to "Meta's Llama 3.1 models & evals"
+- Login Hugging Face and request access to **"Meta's Llama 3.1 models & evals"**
 - You will be approved after several minutes
 - Create a Hugging Face access token (Read permission):<br>
 **Settings → Access Tokens → New Token**
