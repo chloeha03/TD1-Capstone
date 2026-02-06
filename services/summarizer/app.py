@@ -9,7 +9,7 @@ import json
 import redis
 
 from db.db import DatabaseManager, InteractionRepository, CustomerRepository, PromotionRepository, create_er_database_safe
-from llama import llama_processing_layer, finalize_call, call_summary_to_text
+from llama import llama_processing_layer
 
 # Configuration
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
