@@ -1,13 +1,13 @@
-import { GoogleGenAI, Chat, GenerateContentResponse } from "@google/genai";
 
-const apiKey = process.env.API_KEY || '';
-const ai = new GoogleGenAI({ apiKey });
+import { GoogleGenAI, Chat, GenerateContentResponse } from "@google/genai";
 
 // Singleton chat instance management for the session
 let chatInstance: Chat | null = null;
 
+/* Refactored to follow @google/genai guidelines: fresh initialization when needed and strict process.env usage */
 export const getChatInstance = (): Chat => {
   if (!chatInstance) {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     chatInstance = ai.chats.create({
       model: 'gemini-3-pro-preview',
       config: {
@@ -38,8 +38,10 @@ export const sendMessageToAssistant = async (message: string): Promise<AsyncIter
   }
 };
 
+/* Using gemini-3-pro-image-preview: fresh instance creation right before the call is required */
 export const generateImageMockup = async (description: string): Promise<string | null> => {
   try {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const prompt = `A photorealistic, high-fidelity UI screenshot of a banking call center agent software.
     Theme: Professional TD Bank Emerald Green.
     Content: ${description}.

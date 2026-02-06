@@ -11,6 +11,7 @@ export interface Interaction {
   date: string;
   type: 'Call' | 'Bank Visit';
   reason: string;
+  agentAction: string;
   outcome: string;
 }
 
@@ -47,6 +48,4 @@ export interface CallLog {
   status: 'Resolved' | 'Escalated' | 'Pending';
 }
 
-export type ViewState = 'DASHBOARD' | 'ACTIVE_CALL';
-
-export type ScenarioType = 'PROMOTION' | 'CLIENT_SUMMARY' | 'END_CALL';
+export type CallStep = 'SUMMARY' | 'ACTIVE' | 'RECAP';
