@@ -12,7 +12,7 @@ from faster_whisper import WhisperModel
 # Settings
 samplerate = 16000
 block_duration = 0.5  # seconds
-chunk_duration = 2    # seconds 
+chunk_duration = 5    # seconds 
 channels = 1
 
 frames_per_block = int(samplerate * block_duration)
@@ -23,7 +23,7 @@ audio_buffer = []
 
 # Model setup: medium.en + float16 (optimized for 3080)
 # NOTE: Changed device to "cpu" for Mac compatibility
-model = WhisperModel("large-v3", device="cpu", compute_type="int8")
+model = WhisperModel("small.en", device="cpu", compute_type="int8")
 
 def audio_callback(indata, frames, time, status):
     if status:
