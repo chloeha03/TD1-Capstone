@@ -358,6 +358,8 @@ def llama_processing_layer(
         "promotion_recommendations": promo_obj
     }
 
+### TODO: figure out if we still need these/where to use them
+
 def finalize_call(client_id, rolling_call_summary, client_history_summary):
     rolling_text = call_summary_to_text(rolling_call_summary)
 
@@ -384,7 +386,6 @@ Output JSON only:
         fallback={"final_summary": str(raw)}
     )
 
-### TODO: figure out if we still need these/where to use them
 def build_json_prompt(text):
     return f"""
 Return ONLY valid JSON, no extra text.
