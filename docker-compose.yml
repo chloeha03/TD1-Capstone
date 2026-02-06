@@ -51,7 +51,9 @@ services:
 
   # --- Summarizer Service ---
   summarizer_svc:
-    build: ./summarizer
+    build:
+      context: .
+      dockerfile: services/summarizer/Dockerfile
     container_name: td_summarizer
     restart: on-failure  # <--- Keeps trying if DB crashes
     environment:
@@ -60,6 +62,7 @@ services:
       - DB_NAME=td_poc
       - DB_USER=postgres
       - DB_PASS=password123
+      - HF_TOKEN=${HF_TOKEN}
     ports:
       - "8002:8000"
     depends_on:
@@ -67,6 +70,15 @@ services:
         condition: service_healthy
       db:
         condition: service_healthy # <--- Waits for Postgres to actually be ready
+    volumes:
+      - ./models/meta-llama-3.1-8b-instruct:/app/models/meta-llama-3.1-8b-instruct
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   # For testing database interactions
   # docker-compose --profile test up --build tester

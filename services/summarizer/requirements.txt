@@ -1,0 +1,16 @@
+# for llama summarization
+transformers
+accelerate
+sentencepiece
+huggingface_hub
+torch
+tiktoken
+bitsandbytes  # For 4-bit quantization
+
+# for setting up an API
+fastapi
+uvicorn
+
+# For database interaction
+psycopg2
+redis

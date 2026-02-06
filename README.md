@@ -44,3 +44,70 @@ print(final_result)<br>**
 
 
 
+To test the end-to-end flow of the summarizer + database:<br>
+
+First need to download the llama model (can download the cuda version of pytorch if you have a GPU)<br>
+You also need a huggingface token and request access to Llama 3, exported as `HF_TOKEN` <br>
+Linux/Mac: `export HF_TOKEN=<your token>`<br>
+Windows cmd: `set HF_TOKEN=<your token>`<br>
+
+```
+pip install -r requirements.txt
+python download_model.py
+```
+
+Then start the databases and summarizer service:
+```
+docker-compose up --build db redis summarizer_svc
+```
+
+Then in another terminal, run the following commands to simulate a call and check the results:<br>
+============== VERIFY DATA IS INITIALIZED ==============<br>
+```
+docker exec -it td_db psql -U postgres -d td_poc -c "SELECT * FROM customer;"
+docker exec -it td_db psql -U postgres -d td_poc -c "SELECT * FROM promotion;"
+```
+============== CREATE A NEW CALL ==============<br>
+```
+docker exec -it td_redis redis-cli SADD active_calls "call_123"
+docker exec -it td_redis redis-cli SET "call:call_123:customer_id" "1"
+```
+============== ADD TRANSCRIPT CHUNKS ==============<br>
+```
+docker exec -it td_redis redis-cli RPUSH "call:call_123:chunks" "Agent: Hello, how can I help you today?"
+docker exec -it td_redis redis-cli RPUSH "call:call_123:chunks" "Customer: I have a question about my credit card."
+docker exec -it td_redis redis-cli RPUSH "call:call_123:chunks" "Agent: Sure, I can help with that."
+docker exec -it td_redis redis-cli RPUSH "call:call_123:chunks" "Customer: There is a charge for 150 dollars I dont recognize."
+```
+============== CHECK REDIS STATE ==============<br>
+```
+docker exec -it td_redis redis-cli KEYS "*"
+docker exec -it td_redis redis-cli SMEMBERS active_calls
+docker exec -it td_redis redis-cli LRANGE "call:call_123:chunks" 0 -1
+```
+============== WAIT FOR WORKER (5-10 seconds) ==============<br>
+============== CHECK SUMMARY ==============<br>
+```
+curl http://localhost:8002/summary/call_123
+```
+============== CHECK PROMOTIONS ==============<br>
+```
+curl http://localhost:8002/promotions/call_123
+```
+============== HEALTH CHECK ==============<br>
+```
+curl http://localhost:8002/health
+```
+============== SAVE TO DATABASE ==============<br>
+```
+curl -X POST http://localhost:8002/save_summary -H "Content-Type: application/json" -d "{\"call_id\": \"call_123\", \"customer_id\": 1, \"summary\": \"Customer reported unrecognized $150 charge.\"}"
+```
+============== VERIFY SAVED IN POSTGRES ==============<br>
+```
+docker exec -it td_db psql -U postgres -d td_poc -c "SELECT * FROM interaction;"
+```
+============== VERIFY REDIS CLEANUP ==============<br>
+```
+docker exec -it td_redis redis-cli SMEMBERS active_calls
+docker exec -it td_redis redis-cli GET "call:call_123:summary"
+```

@@ -1,0 +1,16 @@
+# for whisper transcription
+faster-whisper
+sounddevice
+numpy
+websockets
+
+# for llama summarization
+transformers
+accelerate
+sentencepiece
+huggingface_hub
+torch
+bitsandbytes  # For 4-bit quantization
+
+# for setting up an API
+fastapi
