@@ -19,7 +19,7 @@ DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASS = os.getenv("DB_PASS", "password123")
 
 SUMMARY_INTERVAL = float(os.getenv("SUMMARY_INTERVAL", "3.0"))
-LOCK_TTL = 3
+LOCK_TTL = 30
 
 # Initialize database schema
 print("[App] Initializing database schema...")
@@ -111,6 +111,12 @@ class SummarizerWorker(threading.Thread):
         try:
             now = time.time()
             last_ts = float(self.r.get(f"call:{call_id}:last_summary_ts") or 0)
+
+            last_idx = int(self.r.get(f"call:{call_id}:processed_index") or 0)
+            total_chunks = self.r.llen(f"call:{call_id}:chunks")
+
+            if total_chunks == last_idx:
+                return  # nothing new
 
             if now - last_ts < SUMMARY_INTERVAL:
                 return
