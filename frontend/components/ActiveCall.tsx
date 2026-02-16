@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 /* Added missing icon imports from lucide-react */
 import { Phone, User, ShieldCheck, X, Check, Wallet, Sparkles, AlertCircle, Save, MicOff, Pause, PhoneForwarded, ChevronDown, Mail, MapPin, Calendar, Building2, History, ExternalLink, TrendingUp, Info, Clock, MousePointer2, ListChecks, CalendarClock, UserCheck, CreditCard, ArrowRightLeft, Search, ArrowLeft, ChevronRight } from 'lucide-react';
 import { Customer, CallStep, Interaction } from '../types';
+import { getCallSummary, CallSummary } from '../services/summaryService';
 
 const mockCustomer: Customer = {
   id: 'CUST-8492',
@@ -16,7 +17,9 @@ const mockCustomer: Customer = {
   sentiment: 'Negative',
   issue: 'Recurring billing discrepancy on Enterprise Plan upgrade',
   jointHolders: ['Mark Jenkins'],
+  //chloe active promotions
   activePromotions: ['Loyalty Credit Active', 'Platinum Savings Qualified'],
+  //chloe client summary
   interactions: [
     { 
       date: 'Oct 22, 2024', 
@@ -51,6 +54,7 @@ const mockTransactions = [
   { id: 6, date: 'Oct 19, 2024', desc: 'Dividend Payment', amount: '+$240.15', account: 'Mutual Fund (...4411)' },
 ];
 
+//chloe promotion list
 const promotionsList = [
   {
     id: 1,
@@ -109,6 +113,11 @@ const ActiveCall: React.FC = () => {
   const [isDragging, setIsDragging] = useState(false);
   const dragRef = useRef<{ startX: number; startY: number; startPosX: number; startPosY: number } | null>(null);
 
+  // Call Summary State
+  const [callSummary, setCallSummary] = useState<CallSummary | null>(null);
+  const [isLoadingSummary, setIsLoadingSummary] = useState(false);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+
   // Call Timer Effect
   useEffect(() => {
     let interval: any;
@@ -118,6 +127,28 @@ const ActiveCall: React.FC = () => {
       }, 1000);
     }
     return () => clearInterval(interval);
+  }, [callStep]);
+
+  // Fetch Call Summary when call ends
+  useEffect(() => {
+    if (callStep === 'RECAP') {
+      const fetchSummary = async () => {
+        setIsLoadingSummary(true);
+        setSummaryError(null);
+        try {
+          // Using a hardcoded call ID for now - in production this would come from the active call
+          const callId = 'CALL-' + mockCustomer.id;
+          const summary = await getCallSummary(callId);
+          setCallSummary(summary);
+        } catch (error) {
+          console.error('Failed to fetch summary:', error);
+          setSummaryError(error instanceof Error ? error.message : 'Failed to load summary');
+        } finally {
+          setIsLoadingSummary(false);
+        }
+      };
+      fetchSummary();
+    }
   }, [callStep]);
 
   // Trigger Promotions after Acknowledging Summary (the "Condition")
@@ -486,10 +517,14 @@ const ActiveCall: React.FC = () => {
                     <div className="bg-rose-50 border border-rose-100 rounded-xl p-4">
                         <div className="flex items-center gap-2 text-rose-700 mb-2">
                         <AlertCircle className="w-4 h-4" />
-                        <span className="text-[10px] font-bold uppercase tracking-wider">Unresolved Billing Dispute</span>
+                        <span className="text-[10px] font-bold uppercase tracking-wider">Unresolved Issues</span>
                         </div>
-                        <p className="text-xs text-rose-900 font-bold mb-1">Audit Required: Ticket #88392</p>
-                        <p className="text-[11px] text-rose-800 leading-relaxed">System identified a failed 'Loyalty Credit' application. Customer likely calling about the $35.00 discrepancy.</p>
+                        <p className="text-xs text-rose-900 font-bold mb-1">Summary Insights</p>
+                        {callSummary?.rolling_summary ? (
+                          <p className="text-[11px] text-rose-800 leading-relaxed">{callSummary.rolling_summary.crm_paragraph || 'System identified pending items from this interaction.'}</p>
+                        ) : (
+                          <p className="text-[11px] text-rose-800 leading-relaxed">System identified a failed 'Loyalty Credit' application. Customer likely calling about the $35.00 discrepancy.</p>
+                        )}
                     </div>
                    </>
                  ) : (
@@ -610,7 +645,7 @@ const ActiveCall: React.FC = () => {
                   <div className="space-y-8">
                      <div>
                         <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Call Reason</label>
-                        <textarea className="w-full h-28 p-4 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-medium focus:ring-2 focus:ring-emerald-500 outline-none transition-all resize-none shadow-inner" defaultValue="Customer identified recurring overcharge in Enterprise Plan upgrade. Expressed frustration over billing complexity and requested immediate audit of October transactions." />
+                        <textarea className="w-full h-28 p-4 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-medium focus:ring-2 focus:ring-emerald-500 outline-none transition-all resize-none shadow-inner" defaultValue={callSummary?.rolling_summary?.crm_paragraph || "Customer identified recurring overcharge in Enterprise Plan upgrade. Expressed frustration over billing complexity and requested immediate audit of October transactions."} />
                      </div>
                      <div>
                         <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Resolution Outcome</label>
@@ -618,6 +653,7 @@ const ActiveCall: React.FC = () => {
                            <option>Resolved - Customer Satisfied</option>
                            <option>Escalated to Billing Support</option>
                            <option>Partial Resolution - Pending Action</option>
+                           <option>{isLoadingSummary ? 'Loading summary...' : 'Auto-classified'}</option>
                         </select>
                      </div>
                   </div>
@@ -625,7 +661,7 @@ const ActiveCall: React.FC = () => {
                   <div className="space-y-8">
                      <div>
                         <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Actions Performed</label>
-                        <textarea className="w-full h-28 p-4 bg-white border border-slate-300 rounded-2xl text-sm font-medium focus:ring-2 focus:ring-emerald-500 shadow-sm resize-none leading-relaxed" placeholder="Detailed resolution steps taken..." defaultValue="Reversed Oct 15th surcharge on Chequing (...8849). Manually updated account status to 'Verified Premium'. Sent confirmation email #CF-8829." />
+                        <textarea className="w-full h-28 p-4 bg-white border border-slate-300 rounded-2xl text-sm font-medium focus:ring-2 focus:ring-emerald-500 shadow-sm resize-none leading-relaxed" placeholder="Detailed resolution steps taken..." defaultValue={callSummary?.history_summary || "Reversed Oct 15th surcharge on Chequing (...8849). Manually updated account status to 'Verified Premium'. Sent confirmation email #CF-8829."} />
                      </div>
                      <div className="bg-slate-50 border border-slate-200 p-6 rounded-2xl shadow-inner">
                         <div className="flex items-center justify-between mb-4">
