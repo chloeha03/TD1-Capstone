@@ -9,7 +9,7 @@ import json
 import redis
 
 from db.db import DatabaseManager, InteractionRepository, CustomerRepository, PromotionRepository, create_er_database_safe
-from llama import llama_processing_layer
+from llama import llama_processing_layer, _load_model
 
 # Configuration
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
@@ -18,8 +18,10 @@ DB_NAME = os.getenv("DB_NAME", "td_poc")
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASS = os.getenv("DB_PASS", "password123")
 
-SUMMARY_INTERVAL = float(os.getenv("SUMMARY_INTERVAL", "3.0"))
+SUMMARY_INTERVAL = float(os.getenv("SUMMARY_INTERVAL", "30.0"))
 LOCK_TTL = 30
+
+USE_MOCK = os.getenv("USE_MOCK_LLM", "false").lower() == "true"
 
 # Initialize database schema
 print("[App] Initializing database schema...")
@@ -77,8 +79,14 @@ def get_promo_catalog() -> list:
 
 
 class SummarizerWorker(threading.Thread):
-    """Background worker that polls Redis for active calls and creates rolling summaries."""
-    
+    """
+    Background worker that waits for call IDs pushed into
+    the 'summarize_queue' Redis list and processes them.
+    """
+
+    QUEUE_NAME = "summarize_queue"
+    PENDING_SET = "pending_calls"
+
     def __init__(self, r_client, worker_id=1):
         super().__init__()
         self.r = r_client
@@ -88,14 +96,30 @@ class SummarizerWorker(threading.Thread):
 
     def run(self):
         print(f"[SummarizerWorker {self.worker_id}] Started")
+
         while self.running:
             try:
-                active_calls = self.r.smembers("active_calls")
-                for call_id in active_calls:
+                # Block until a call_id is available (timeout allows clean shutdown)
+                result = self.r.blpop(self.QUEUE_NAME, timeout=5)
+
+                if result:
+                    _, call_id = result
+                    self.r.srem(self.PENDING_SET, call_id)
                     self.process_call(call_id)
+
             except redis.ConnectionError as e:
                 print(f"[SummarizerWorker] Redis connection error: {e}")
-            time.sleep(0.2)
+            except Exception as e:
+                print(f"[SummarizerWorker] Unexpected error: {e}")
+
+    def enqueue_call(self, call_id):
+        """
+        Push call_id to queue only if not already pending.
+        """
+        self.r.set(f"call:{call_id}:last_summary_ts", time.time(), nx=True)
+        
+        if self.r.sadd(self.PENDING_SET, call_id):
+            self.r.rpush(self.QUEUE_NAME, call_id)
 
     def acquire_lock(self, call_id):
         key = f"lock:call:{call_id}"
@@ -110,60 +134,72 @@ class SummarizerWorker(threading.Thread):
 
         try:
             now = time.time()
-            last_ts = float(self.r.get(f"call:{call_id}:last_summary_ts") or 0)
 
+            last_ts = float(self.r.get(f"call:{call_id}:last_summary_ts") or now)
             last_idx = int(self.r.get(f"call:{call_id}:processed_index") or 0)
             total_chunks = self.r.llen(f"call:{call_id}:chunks")
 
             if total_chunks == last_idx:
-                return  # nothing new
+                return
 
             if now - last_ts < SUMMARY_INTERVAL:
+                # Re-enqueue so it runs later
+                time.sleep(1)
+                self.enqueue_call(call_id)
                 return
 
             self._do_summarize(call_id)
-
         finally:
             self.release_lock(call_id)
 
     def _do_summarize(self, call_id):
-        """Core summarization using llama_processing_layer."""
         now = time.time()
-        
+
         last_idx = int(self.r.get(f"call:{call_id}:processed_index") or 0)
         total_chunks = self.r.llen(f"call:{call_id}:chunks")
 
         if total_chunks == last_idx:
-            return None  # No new chunks
+            return None
 
-        # Get new transcript chunks
         new_chunks = self.r.lrange(f"call:{call_id}:chunks", last_idx, -1)
         new_transcript = " ".join(new_chunks)
+        actual_processed_count = last_idx + len(new_chunks)
 
-        # Get customer_id and history
         customer_id = self.r.get(f"call:{call_id}:customer_id") or call_id
         current_history = self.r.get(f"call:{call_id}:history") or ""
-        
-        # Fetch static data from DB
-        client_profile = get_client_profile(int(customer_id)) if customer_id.isdigit() else "Unknown"
+
+        client_profile = (
+            get_client_profile(int(customer_id))
+            if customer_id.isdigit()
+            else "Unknown"
+        )
+
         promo_catalog = get_promo_catalog()
 
-        # Call LLM processing layer
+        print(f"[Summary] Summarization for call {call_id} with {len(new_chunks)} new chunks...")
+        start_time = time.time()
         result = llama_processing_layer(
             client_id=call_id,
             chunk_text=new_transcript,
             client_profile=client_profile,
             client_history_summary=current_history,
             promotion_catalog=promo_catalog,
-            redis_store=self.r
+            redis_store=self.r,
         )
+        elapsed = time.time() - start_time
+        print(f"[Summary] Call {call_id}: Summarization ({len(new_chunks)} chunks) took {elapsed:.3f} seconds")
 
-        # Update Redis atomically
         pipe = self.r.pipeline()
         pipe.set(f"call:{call_id}:summary", json.dumps(result["call_rolling_summary"]))
-        pipe.set(f"call:{call_id}:history", result["client_history_summary"].get("history_summary", ""))
-        pipe.set(f"call:{call_id}:promotions", json.dumps(result["promotion_recommendations"]))
-        pipe.set(f"call:{call_id}:processed_index", total_chunks)
+        pipe.set(
+            f"call:{call_id}:history",
+            result["client_history_summary"].get("history_summary", ""),
+        )
+        pipe.set(
+            f"call:{call_id}:promotions",
+            json.dumps(result["promotion_recommendations"]),
+        )
+        pipe.set(f"call:{call_id}:processed_index", actual_processed_count)
         pipe.set(f"call:{call_id}:last_summary_ts", now)
         pipe.execute()
 
@@ -172,7 +208,7 @@ class SummarizerWorker(threading.Thread):
             f"Summarized {call_id} "
             f"({total_chunks - last_idx} chunks)"
         )
-        
+
         return result
 
     def stop(self):
@@ -187,6 +223,15 @@ worker = None
 async def lifespan(app: FastAPI):
     """Start/stop background worker on app startup/shutdown."""
     global worker
+
+    if not USE_MOCK:
+        print("[App] Loading Llama model at startup...")
+        try:
+            _load_model()
+            print("[App] Llama model loaded successfully.")
+        except Exception as e:
+            print(f"[App] Model failed to load: {e}")
+            raise e  # crash startup intentionally
 
     if CLEAN_ON_START:
         print("[App] Cleaning Redis...")
@@ -260,68 +305,79 @@ class SaveSummaryResponse(BaseModel):
 
 
 # ============== Endpoints ==============
-
 @app.get("/summary/{call_id}", response_model=GetSummaryResponse)
 def get_summary(call_id: str):
     """
     GET summary for a call. 
-    When call ends, frontend calls this to get the final summary.
-    Runs one last summarization step to process any remaining chunks.
+    1. Polls Redis to see if the background worker finishes the job.
+    2. If no one is working on it and chunks remain, processes them immediately.
     """
     try:
-        # Run one final summarization to process any remaining chunks
+        total_chunks = redis_client.llen(f"call:{call_id}:chunks")
         lock_key = f"lock:call:{call_id}"
-        if redis_client.set(lock_key, "api", nx=True, ex=LOCK_TTL):
-            try:
-                last_idx = int(redis_client.get(f"call:{call_id}:processed_index") or 0)
-                total_chunks = redis_client.llen(f"call:{call_id}:chunks")
+        
+        max_wait = 90
+        start_wait = time.time()
+        
+        while time.time() - start_wait < max_wait:
+            last_idx = int(redis_client.get(f"call:{call_id}:processed_index") or 0)
 
-                if total_chunks > last_idx:
-                    # Process remaining chunks
-                    new_chunks = redis_client.lrange(f"call:{call_id}:chunks", last_idx, -1)
-                    new_transcript = " ".join(new_chunks)
-                    
-                    customer_id = redis_client.get(f"call:{call_id}:customer_id") or call_id
-                    current_history = redis_client.get(f"call:{call_id}:history") or ""
-                    
-                    client_profile = get_client_profile(int(customer_id)) if customer_id.isdigit() else "Unknown"
-                    promo_catalog = get_promo_catalog()
+            # Case 1: All chunks are already processed
+            if last_idx >= total_chunks:
+                break
+            
+            # Case 2: Check if a worker is currently holding the lock
+            lock_owner = redis_client.get(lock_key)
+            if lock_owner and lock_owner != "api":
+                # A worker is already processing, so we wait and poll
+                time.sleep(2)
+                continue
+            
+            # Case 3: No one is processing, API takes over
+            if redis_client.set(lock_key, "api", nx=True, ex=LOCK_TTL):
+                try:
+                    # Re-check index inside the lock to prevent double-processing
+                    current_idx = int(redis_client.get(f"call:{call_id}:processed_index") or 0)
+                    if current_idx < total_chunks:
+                        # --- Process Remaining Chunks ---
+                        new_chunks = redis_client.lrange(f"call:{call_id}:chunks", current_idx, -1)
+                        new_transcript = " ".join(new_chunks)
+                        
+                        customer_id = redis_client.get(f"call:{call_id}:customer_id") or call_id
+                        current_history = redis_client.get(f"call:{call_id}:history") or ""
+                        client_profile = get_client_profile(int(customer_id)) if str(customer_id).isdigit() else "Unknown"
+                        promo_catalog = get_promo_catalog()
 
-                    result = llama_processing_layer(
-                        client_id=call_id,
-                        chunk_text=new_transcript,
-                        client_profile=client_profile,
-                        client_history_summary=current_history,
-                        promotion_catalog=promo_catalog,
-                        redis_store=redis_client
-                    )
+                        result = llama_processing_layer(
+                            client_id=call_id,
+                            chunk_text=new_transcript,
+                            client_profile=client_profile,
+                            client_history_summary=current_history,
+                            promotion_catalog=promo_catalog,
+                            redis_store=redis_client
+                        )
 
-                    pipe = redis_client.pipeline()
-                    pipe.set(f"call:{call_id}:summary", json.dumps(result["call_rolling_summary"]))
-                    pipe.set(f"call:{call_id}:history", result["client_history_summary"].get("history_summary", ""))
-                    pipe.set(f"call:{call_id}:promotions", json.dumps(result["promotion_recommendations"]))
-                    pipe.set(f"call:{call_id}:processed_index", total_chunks)
-                    pipe.execute()
-            finally:
-                redis_client.delete(lock_key)
+                        pipe = redis_client.pipeline()
+                        pipe.set(f"call:{call_id}:summary", json.dumps(result["call_rolling_summary"]))
+                        pipe.set(f"call:{call_id}:history", result["client_history_summary"].get("history_summary", ""))
+                        pipe.set(f"call:{call_id}:promotions", json.dumps(result["promotion_recommendations"]))
+                        pipe.set(f"call:{call_id}:processed_index", total_chunks)
+                        pipe.execute()
+                    break # Work is done
+                finally:
+                    redis_client.delete(lock_key)
+            
+            time.sleep(1)
 
-        # Get current data from Redis
+        # --- Final Data Retrieval ---
         summary_json = redis_client.get(f"call:{call_id}:summary")
         if not summary_json:
             raise HTTPException(status_code=404, detail=f"No summary found for call {call_id}")
 
-        try:
-            rolling_summary = json.loads(summary_json)
-        except json.JSONDecodeError:
-            rolling_summary = {"crm_paragraph": summary_json}
-
+        rolling_summary = json.loads(summary_json) if summary_json else {}
         history = redis_client.get(f"call:{call_id}:history") or ""
         promos_json = redis_client.get(f"call:{call_id}:promotions") or "{}"
-        try:
-            promotions = json.loads(promos_json)
-        except json.JSONDecodeError:
-            promotions = {"recommendations": [], "no_relevant_flag": True}
-
+        promotions = json.loads(promos_json) if promos_json else {"recommendations": [], "no_relevant_flag": True}
         chunks_processed = int(redis_client.get(f"call:{call_id}:processed_index") or 0)
 
         return {
@@ -332,8 +388,7 @@ def get_summary(call_id: str):
             "chunks_processed": chunks_processed,
         }
 
-    except HTTPException:
-        raise
+    except HTTPException: raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -373,14 +428,24 @@ def save_summary(payload: SaveSummaryRequest):
 
         # Clean up Redis
         pipe = redis_client.pipeline()
+
+        keys_to_del = [
+            f"call:{payload.call_id}:chunks",
+            f"call:{payload.call_id}:summary",
+            f"call:{payload.call_id}:history",
+            f"call:{payload.call_id}:promotions",
+            f"call:{payload.call_id}:processed_index",
+            f"call:{payload.call_id}:last_summary_ts",
+            f"call:{payload.call_id}:customer_id",
+            f"lock:call:{payload.call_id}"
+        ]
+        for k in keys_to_del: pipe.delete(k)
+
+        # Control Keys
         pipe.srem("active_calls", payload.call_id)
-        pipe.delete(f"call:{payload.call_id}:chunks")
-        pipe.delete(f"call:{payload.call_id}:summary")
-        pipe.delete(f"call:{payload.call_id}:history")
-        pipe.delete(f"call:{payload.call_id}:promotions")
-        pipe.delete(f"call:{payload.call_id}:processed_index")
-        pipe.delete(f"call:{payload.call_id}:last_summary_ts")
-        pipe.delete(f"call:{payload.call_id}:customer_id")
+        pipe.srem("pending_calls", payload.call_id)
+        pipe.lrem("summarize_queue", 0, payload.call_id)
+
         pipe.execute()
 
         return {

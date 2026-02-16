@@ -25,8 +25,8 @@ _load_lock = threading.Lock()
 
 # --- Core Model Loading ---
 def _load_model():
-    """Lazy load the model and tokenizer."""
     global _tokenizer, _model
+
     if _tokenizer is not None and _model is not None:
         return _tokenizer, _model
 
@@ -34,14 +34,7 @@ def _load_model():
         if _model is not None:
             return _tokenizer, _model
 
-        print(f"[llama] Loading model: {MODEL_ID}")
-        
-        _tokenizer = AutoTokenizer.from_pretrained(
-            MODEL_ID, 
-            use_fast=True, 
-            token=HF_TOKEN, 
-            cache_dir=LOCAL_DIR
-        )
+        print("[llama] Attempting to load model locally...")
 
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
@@ -50,20 +43,48 @@ def _load_model():
             bnb_4bit_compute_dtype=torch.float16,
         )
 
-        _model = AutoModelForCausalLM.from_pretrained(
-            MODEL_ID,
-            quantization_config=bnb_config,
-            device_map="auto",
-            token=HF_TOKEN,
-            cache_dir=LOCAL_DIR
-        )
-        
-        if _tokenizer.pad_token_id is None:
-            _tokenizer.pad_token = _tokenizer.eos_token
-        
-        print(f"[llama] Model loaded: {MODEL_ID}, dtype: {_model.dtype}")
+        try:
+            # try local first
+            _tokenizer = AutoTokenizer.from_pretrained(
+                LOCAL_DIR,
+                use_fast=True,
+                local_files_only=True
+            )
 
-    return _tokenizer, _model
+            _model = AutoModelForCausalLM.from_pretrained(
+                LOCAL_DIR,
+                quantization_config=bnb_config,
+                device_map="auto",
+                attn_implementation="sdpa",
+                local_files_only=True
+            )
+
+            print("[llama] Loaded model from local directory.")
+
+        except Exception as e:
+            print("[llama] Local load failed. Falling back to HuggingFace Hub.")
+            print(f"[llama] Reason: {e}")
+
+            _tokenizer = AutoTokenizer.from_pretrained(
+                MODEL_ID,
+                use_fast=True,
+                token=HF_TOKEN if HF_TOKEN else None
+            )
+
+            _model = AutoModelForCausalLM.from_pretrained(
+                MODEL_ID,
+                quantization_config=bnb_config,
+                device_map="auto",
+                attn_implementation="sdpa",
+                token=HF_TOKEN if HF_TOKEN else None
+            )
+
+            print("[llama] Downloaded model from HuggingFace.")
+        
+        _tokenizer.pad_token = _tokenizer.eos_token
+        _model.config.pad_token_id = _tokenizer.eos_token_id
+        _model.generation_config.pad_token_id = _tokenizer.eos_token_id
+        return _tokenizer, _model
 
 
 def llama_generate(prompt, max_tokens=256, temperature=0.2):
@@ -314,7 +335,7 @@ Output JSON only:
     return validate_promotions(promo_obj, promotion_catalog)
 
 
-def llama_processing_layer(
+def llama_processing_layer_old(
     client_id,
     chunk_text,
     client_profile,
@@ -356,6 +377,71 @@ def llama_processing_layer(
         "call_rolling_summary": call_summary_obj,
         "client_history_summary": updated_history_obj,
         "promotion_recommendations": promo_obj
+    }
+
+def llama_processing_layer(
+    client_id,
+    chunk_text,
+    client_profile,
+    client_history_summary,
+    promotion_catalog,
+    redis_store
+):
+    """Unified layer: One LLM call to rule them all."""
+    
+    # Get current summary for context
+    raw_current = redis_store.get(f"call:{client_id}:summary")
+    current_obj = parse_json_or_fallback(raw_current, {"bullets": [], "crm_paragraph": ""})
+    current_text = call_summary_to_text(current_obj)
+
+    # The Master Prompt
+    prompt = f"""
+[INST] You are a TD Bank Call Center Assistant. 
+Process the new transcript segment and update the rolling call data.
+
+CONTEXT:
+- Client Profile: {client_profile}
+- Existing History: {client_history_summary}
+- Current Call Summary: {current_text}
+- Available Promotions: {promotion_catalog}
+
+NEW TRANSCRIPT:
+{chunk_text}
+
+OUTPUT RULES:
+1. Return ONLY valid JSON.
+2. 'bullets': Summarize NEW info only. Include client_issue, agent_action, next_step.
+3. 'history_summary': Update ongoing client history with facts from this chunk.
+4. 'promotions': Recommend up to 2 promo_ids from the catalog only if relevant.
+
+JSON SCHEMA:
+{{
+  "call_rolling_summary": {{
+    "bullets": [{{ "client_issue": "...", "agent_action": "...", "next_step": "..." }}],
+    "crm_paragraph": "..."
+  }},
+  "client_history_summary": {{ "history_summary": "..." }},
+  "promotion_recommendations": {{
+    "recommendations": [{{ "promo_id": "...", "name": "...", "reason": "..." }}],
+    "no_relevant_flag": bool
+  }}
+}}
+[/INST]
+"""
+    # Standardize on a single generation
+    raw_output = llama_generate(prompt, max_tokens=700, temperature=0.1)
+    
+    # Parse and Validate
+    result = parse_json_or_fallback(raw_output, fallback={})
+    
+    # Safety fallback for missing keys
+    return {
+        "call_rolling_summary": result.get("call_rolling_summary", {"bullets": [], "crm_paragraph": "Parsing error"}),
+        "client_history_summary": result.get("client_history_summary", {"history_summary": client_history_summary}),
+        "promotion_recommendations": validate_promotions(
+            result.get("promotion_recommendations", {}), 
+            promotion_catalog
+        )
     }
 
 ### TODO: figure out if we still need these/where to use them

@@ -1,0 +1,6 @@
+faster-whisper
+numpy
+fastapi
+uvicorn[standard]
+websockets
+redis

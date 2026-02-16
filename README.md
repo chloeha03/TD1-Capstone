@@ -7,14 +7,30 @@ To run frontend:
 - in windows powershell, cd into the front end folder, run npm install, then do npm run dev
 - go to the local dev link that is displayed
 
-To run transcription:
-- save WhisperTranscription.py
-- run the following installations before running the python file:
-- brew install ffmpeg
-- brew install pkg-config
-- pip install faster-whisper
-- pip install sounddevice numpy
+To run transcription service:
 
+1. Download the Whisper model:
+```
+pip install faster-whisper
+python services/transcriber/download_model.py --model small --output models/whisper
+```
+
+2. Start the services (GPU):
+```
+docker-compose up --build redis transcriber_svc
+```
+
+Or start with CPU mode:
+```
+docker-compose --profile cpu up --build redis transcriber_cpu
+```
+
+3. Install client dependencies and run:
+```
+cd client
+pip install -r requirements.txt
+python client.py --call-id call_123 --customer-id 1
+```
 
 To run LLM:<br>
 To run the LLaMA summarization module, you must authenticate with Hugging Face in order to download the gated Meta LLaMA model weights.

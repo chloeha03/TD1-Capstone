@@ -36,18 +36,57 @@ services:
       retries: 5
     # ------------------------------------------------------------------
 
-  # --- Transcription Service ---
-  transcription_svc:
-    build: ./transcription
-    container_name: td_transcription
-    restart: on-failure  # <--- Keeps trying if Redis isn't ready yet
+  # --- Transcription Service (GPU) ---
+  transcriber_svc:
+    build:
+      context: .
+      dockerfile: services/transcriber/Dockerfile
+    container_name: td_transcriber
+    restart: on-failure
     environment:
       - REDIS_HOST=redis
+      - WHISPER_MODEL=medium.en
+      - WHISPER_DEVICE=cuda
+      - WHISPER_COMPUTE=float16
+      - WHISPER_MODEL_PATH=/app/models/whisper
     ports:
       - "8001:8000"
     depends_on:
       redis:
-        condition: service_healthy # <--- Waits for Redis "healthcheck" to pass
+        condition: service_healthy
+    volumes:
+      - ./models/whisper:/app/models/whisper
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # --- Transcription Service (CPU) ---
+  transcriber_cpu:
+    build:
+      context: .
+      dockerfile: services/transcriber/Dockerfile
+      args:
+        BASE_IMAGE: python:3.11-slim
+    container_name: td_transcriber_cpu
+    restart: on-failure
+    environment:
+      - REDIS_HOST=redis
+      - WHISPER_MODEL=medium.en
+      - WHISPER_DEVICE=cpu
+      - WHISPER_COMPUTE=int8
+      - WHISPER_MODEL_PATH=/app/models/whisper
+    ports:
+      - "8001:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./models/whisper:/app/models/whisper
+    profiles: ["cpu"]
 
   # --- Summarizer Service ---
   summarizer_svc:
@@ -57,6 +96,7 @@ services:
     container_name: td_summarizer
     restart: on-failure  # <--- Keeps trying if DB crashes
     environment:
+      - PYTHONUNBUFFERED=1
       - REDIS_HOST=redis
       - DB_HOST=db
       - DB_NAME=td_poc
