@@ -12,7 +12,7 @@ To run transcription service:
 1. Download the Whisper model:
 ```
 pip install faster-whisper
-python services/transcriber/download_model.py --model small --output models/whisper
+python services/transcriber/download_model.py
 ```
 
 2. Start the services (GPU):
@@ -60,7 +60,7 @@ print(final_result)<br>**
 
 
 
-To test the end-to-end flow of the summarizer + database:<br>
+To test the end-to-end flow of the transcriber + summarizer + database:<br>
 
 First need to download the llama model (can download the cuda version of pytorch if you have a GPU)<br>
 You also need a huggingface token and request access to Llama 3, exported as `HF_TOKEN` <br>
@@ -69,12 +69,13 @@ Windows cmd: `set HF_TOKEN=<your token>`<br>
 
 ```
 pip install -r requirements.txt
-python download_model.py
+python services/summarizer/download_model.py
+python services/transcriber/download_model.py
 ```
 
-Then start the databases and summarizer service:
+Then start the databases and services:
 ```
-docker-compose up --build db redis summarizer_svc
+docker-compose up --build redis db summarizer_svc transcriber_svc
 ```
 
 Then in another terminal, run the following commands to simulate a call and check the results:<br>
@@ -85,23 +86,20 @@ docker exec -it td_db psql -U postgres -d td_poc -c "SELECT * FROM promotion;"
 ```
 ============== CREATE A NEW CALL ==============<br>
 ```
-docker exec -it td_redis redis-cli SADD active_calls "call_123"
-docker exec -it td_redis redis-cli SET "call:call_123:customer_id" "1"
+cd client
+pip install -r requirements.txt
+python client.py --call-id call_123 --customer-id 1
 ```
-============== ADD TRANSCRIPT CHUNKS ==============<br>
-```
-docker exec -it td_redis redis-cli RPUSH "call:call_123:chunks" "Agent: Hello, how can I help you today?"
-docker exec -it td_redis redis-cli RPUSH "call:call_123:chunks" "Customer: I have a question about my credit card."
-docker exec -it td_redis redis-cli RPUSH "call:call_123:chunks" "Agent: Sure, I can help with that."
-docker exec -it td_redis redis-cli RPUSH "call:call_123:chunks" "Customer: There is a charge for 150 dollars I dont recognize."
-```
+
+Now you can speak into your default microphone.
+
 ============== CHECK REDIS STATE ==============<br>
 ```
 docker exec -it td_redis redis-cli KEYS "*"
 docker exec -it td_redis redis-cli SMEMBERS active_calls
 docker exec -it td_redis redis-cli LRANGE "call:call_123:chunks" 0 -1
 ```
-============== WAIT FOR WORKER (5-10 seconds) ==============<br>
+============== WAIT FOR WORKER ==============<br>
 ============== CHECK SUMMARY ==============<br>
 ```
 curl http://localhost:8002/summary/call_123
