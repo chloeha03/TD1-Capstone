@@ -1,6 +1,6 @@
 // Service for fetching call summaries from the backend summarizer service
 
-const SUMMARIZER_BASE_URL = process.env.REACT_APP_SUMMARIZER_URL || "http://localhost:8000";
+const SUMMARIZER_BASE_URL = "/api/summarizer";
 
 export interface CallSummary {
   call_id: string;

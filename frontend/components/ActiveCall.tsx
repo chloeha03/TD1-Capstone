@@ -1,9 +1,9 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-/* Added missing icon imports from lucide-react */
-import { Phone, User, ShieldCheck, X, Check, Wallet, Sparkles, AlertCircle, Save, MicOff, Pause, PhoneForwarded, ChevronDown, Mail, MapPin, Calendar, Building2, History, ExternalLink, TrendingUp, Info, Clock, MousePointer2, ListChecks, CalendarClock, UserCheck, CreditCard, ArrowRightLeft, Search, ArrowLeft, ChevronRight } from 'lucide-react';
+import { Phone, User, ShieldCheck, X, Check, Wallet, Sparkles, AlertCircle, Save, MicOff, Pause, PhoneForwarded, ChevronDown, Mail, MapPin, Calendar, Building2, History, ExternalLink, TrendingUp, Info, Clock, MousePointer2, ListChecks, CalendarClock, UserCheck, CreditCard, ArrowRightLeft, Search, ArrowLeft, ChevronRight, Mic, Loader2 } from 'lucide-react';
 import { Customer, CallStep, Interaction } from '../types';
-import { getCallSummary, CallSummary } from '../services/summaryService';
+import { getCallSummary, saveCallSummary, CallSummary } from '../services/summaryService';
+import { useAudioRecorder } from '../services/useAudioRecorder';
 
 const mockCustomer: Customer = {
   id: 'CUST-8492',
@@ -21,26 +21,26 @@ const mockCustomer: Customer = {
   activePromotions: ['Loyalty Credit Active', 'Platinum Savings Qualified'],
   //chloe client summary
   interactions: [
-    { 
-      date: 'Oct 22, 2024', 
-      type: 'Bank Visit', 
-      reason: 'Mortgage Inquiry', 
-      agentAction: 'Collected physical ID and pay stubs. Initiated preliminary credit check.', 
-      outcome: 'Pending Documents' 
+    {
+      date: 'Oct 22, 2024',
+      type: 'Bank Visit',
+      reason: 'Mortgage Inquiry',
+      agentAction: 'Collected physical ID and pay stubs. Initiated preliminary credit check.',
+      outcome: 'Pending Documents'
     },
-    { 
-      date: 'Oct 20, 2024', 
-      type: 'Call', 
-      reason: 'Technical Support', 
-      agentAction: 'Walked customer through 2FA reset process and app cache clearance.', 
-      outcome: 'Resolved' 
+    {
+      date: 'Oct 20, 2024',
+      type: 'Call',
+      reason: 'Technical Support',
+      agentAction: 'Walked customer through 2FA reset process and app cache clearance.',
+      outcome: 'Resolved'
     },
-    { 
-      date: 'Oct 15, 2024', 
-      type: 'Call', 
-      reason: 'Billing Dispute', 
-      agentAction: 'Verified October billing statement. Noted $35 surcharge mismatch.', 
-      outcome: 'Escalated' 
+    {
+      date: 'Oct 15, 2024',
+      type: 'Call',
+      reason: 'Billing Dispute',
+      agentAction: 'Verified October billing statement. Noted $35 surcharge mismatch.',
+      outcome: 'Escalated'
     }
   ]
 };
@@ -90,7 +90,7 @@ const ActiveCall: React.FC = () => {
   // Call Lifecycle State
   const [callStep, setCallStep] = useState<CallStep>('SUMMARY');
   const [showPromos, setShowPromos] = useState(false);
-  
+
   // UI States
   const [activeTab, setActiveTab] = useState<'transactions' | 'transfer'>('transactions');
   const [selectedPromoId, setSelectedPromoId] = useState<number | null>(null);
@@ -118,6 +118,16 @@ const ActiveCall: React.FC = () => {
   const [isLoadingSummary, setIsLoadingSummary] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
 
+  // --- Audio Recording & Call ID ---
+  const [callId] = useState(() => `call-${Date.now()}`);
+  const [customerId] = useState(1);
+  const { isRecording, wsConnected, transcriptChunks, error: audioError, startRecording, stopRecording } = useAudioRecorder();
+  const recapSummaryRef = useRef<HTMLTextAreaElement>(null);
+  const recapActionsRef = useRef<HTMLTextAreaElement>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const transcriptEndRef = useRef<HTMLDivElement>(null);
+
   // Call Timer Effect
   useEffect(() => {
     let interval: any;
@@ -129,15 +139,36 @@ const ActiveCall: React.FC = () => {
     return () => clearInterval(interval);
   }, [callStep]);
 
-  // Fetch Call Summary when call ends
+  // Start mic recording when call becomes ACTIVE (guarded against StrictMode double-fire)
+  const recordingStartedRef = useRef(false);
+  useEffect(() => {
+    if (callStep === 'ACTIVE' && !recordingStartedRef.current) {
+      recordingStartedRef.current = true;
+      startRecording(callId, String(customerId));
+    }
+    return () => {
+      // StrictMode cleanup: if we leave ACTIVE, stop recording
+      if (callStep !== 'ACTIVE' && recordingStartedRef.current) {
+        recordingStartedRef.current = false;
+      }
+    };
+  }, [callStep]);
+
+  // Stop mic recording and fetch summary when call ends (RECAP)
   useEffect(() => {
     if (callStep === 'RECAP') {
+      // Stop the mic/WebSocket
+      if (isRecording) {
+        stopRecording();
+      }
+
+      // Fetch final summary after short delay to let server flush
       const fetchSummary = async () => {
         setIsLoadingSummary(true);
         setSummaryError(null);
         try {
-          // Using a hardcoded call ID for now - in production this would come from the active call
-          const callId = 'CALL-' + mockCustomer.id;
+          // Small delay to let the transcriber flush remaining audio
+          await new Promise(r => setTimeout(r, 2000));
           const summary = await getCallSummary(callId);
           setCallSummary(summary);
         } catch (error) {
@@ -150,6 +181,30 @@ const ActiveCall: React.FC = () => {
       fetchSummary();
     }
   }, [callStep]);
+
+  // Auto-scroll transcript to bottom
+  useEffect(() => {
+    transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [transcriptChunks]);
+
+  // Save handler for RECAP
+  const handleSaveSession = async () => {
+    const summaryText = recapSummaryRef.current?.value || '';
+    if (!summaryText.trim()) {
+      setSaveError('Summary cannot be empty');
+      return;
+    }
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      await saveCallSummary(callId, customerId, summaryText);
+      window.location.reload();
+    } catch (err) {
+      console.error('Failed to save summary:', err);
+      setSaveError(err instanceof Error ? err.message : 'Failed to save');
+      setIsSaving(false);
+    }
+  };
 
   // Trigger Promotions after Acknowledging Summary (the "Condition")
   useEffect(() => {
@@ -208,7 +263,7 @@ const ActiveCall: React.FC = () => {
 
   return (
     <div className="flex flex-col h-full p-6 relative gap-6 overflow-hidden select-none">
-      
+
       {/* HEADER & CONTROLS */}
       <div className="flex flex-col gap-4 flex-shrink-0">
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex items-center justify-between">
@@ -222,7 +277,7 @@ const ActiveCall: React.FC = () => {
                 Verified
               </div>
             </div>
-            
+
             <div className="flex items-center gap-10">
               <div className="min-w-[180px]">
                 <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
@@ -252,7 +307,7 @@ const ActiveCall: React.FC = () => {
 
           <div className="flex items-center gap-6">
             <div className="relative">
-              <button 
+              <button
                 onClick={() => setShowStatusMenu(!showStatusMenu)}
                 className="flex items-center gap-2 px-3 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg transition-colors"
               >
@@ -278,9 +333,28 @@ const ActiveCall: React.FC = () => {
                   {callStep === 'RECAP' ? 'Disconnected' : 'Connected'}
                 </span>
               </div>
+              {/* Recording indicator */}
+              {isRecording && (
+                <div className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 rounded-full border border-rose-200">
+                  <div className="w-2 h-2 rounded-full bg-rose-500 animate-pulse"></div>
+                  <span className="text-[10px] font-bold text-rose-600 uppercase tracking-wider">Recording</span>
+                </div>
+              )}
+              {isRecording && !wsConnected && (
+                <div className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 rounded-full border border-amber-200" title="Audio is being captured. Waiting for transcriber connection...">
+                  <Loader2 className="w-3 h-3 text-amber-600 animate-spin" />
+                  <span className="text-[10px] font-bold text-amber-600">Connecting...</span>
+                </div>
+              )}
+              {audioError && (
+                <div className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 rounded-full border border-rose-200" title={audioError}>
+                  <AlertCircle className="w-3 h-3 text-rose-600" />
+                  <span className="text-[10px] font-bold text-rose-600 max-w-[120px] truncate">{audioError}</span>
+                </div>
+              )}
               <button onClick={() => setIsMuted(!isMuted)} className={`p-3 rounded-full transition-colors ${isMuted ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}><MicOff className="w-5 h-5" /></button>
               <button onClick={() => setIsOnHold(!isOnHold)} className={`p-3 rounded-full transition-colors ${isOnHold ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}><Pause className="w-5 h-5" /></button>
-              <button 
+              <button
                 disabled={callStep === 'RECAP'}
                 onClick={() => setCallStep('RECAP')}
                 className={`p-3 rounded-full shadow-md transform rotate-[135deg] transition-all ${callStep === 'RECAP' ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-rose-600 text-white hover:bg-rose-700'}`}
@@ -299,7 +373,7 @@ const ActiveCall: React.FC = () => {
             { label: 'TFSA', num: '...0021', bal: '$28,300.00', icon: ShieldCheck },
             { label: 'Mutual Fund', num: '...4411', bal: '$105,400.00', icon: CreditCard },
           ].map((acc) => (
-            <div 
+            <div
               key={acc.label}
               onClick={() => setSelectedAccount(acc.label)}
               className="bg-white border border-slate-200 rounded-xl p-3 min-w-[210px] flex items-center justify-between cursor-pointer hover:border-emerald-500 transition-all hover:shadow-md group shadow-sm"
@@ -332,20 +406,20 @@ const ActiveCall: React.FC = () => {
               <ArrowRightLeft className="w-4 h-4" /> Transfer Call
             </button>
           </div>
-          
+
           {callStep === 'ACTIVE' && (
-             <div className="flex items-center gap-3">
-                <button 
-                  onClick={() => {
-                    setSelectedSummaryInteraction(null);
-                    setCallStep('SUMMARY');
-                  }}
-                  className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 text-[10px] font-bold rounded-lg transition-all flex items-center gap-1.5 border border-slate-200"
-                >
-                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
-                  Client Summary
-                </button>
-             </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => {
+                  setSelectedSummaryInteraction(null);
+                  setCallStep('SUMMARY');
+                }}
+                className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 text-[10px] font-bold rounded-lg transition-all flex items-center gap-1.5 border border-slate-200"
+              >
+                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
+                Client Summary
+              </button>
+            </div>
           )}
         </div>
 
@@ -390,7 +464,7 @@ const ActiveCall: React.FC = () => {
                 <h3 className="text-xl font-bold text-slate-800">Route Session</h3>
                 <p className="text-sm text-slate-500 mt-2 max-w-sm">Select target department to initiate a transfer.</p>
               </div>
-              
+
               <div className="grid grid-cols-2 gap-6">
                 <div className="space-y-3">
                   <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Target Department</label>
@@ -408,7 +482,7 @@ const ActiveCall: React.FC = () => {
                   </div>
                 </div>
               </div>
-              
+
               <button className="w-full py-5 bg-emerald-600 text-white font-bold rounded-xl hover:bg-emerald-700 transition-all shadow-xl flex items-center justify-center gap-3 text-lg group">
                 <PhoneForwarded className="w-6 h-6 group-hover:translate-x-1 transition-transform" /> Initiate Transfer
               </button>
@@ -416,11 +490,33 @@ const ActiveCall: React.FC = () => {
           )}
         </div>
 
+        {/* LIVE TRANSCRIPT PANEL (during ACTIVE call) */}
+        {callStep === 'ACTIVE' && transcriptChunks.length > 0 && (
+          <div className="border-t border-slate-100 bg-slate-50/80 px-6 py-3 max-h-[180px] overflow-y-auto custom-scrollbar flex-shrink-0">
+            <div className="flex items-center gap-2 mb-2">
+              <Mic className="w-3.5 h-3.5 text-emerald-600" />
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Live Transcript</span>
+              <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
+            </div>
+            <div className="space-y-1">
+              {transcriptChunks.map((chunk, idx) => (
+                <p key={idx} className="text-xs text-slate-600 leading-relaxed font-medium">
+                  <span className="text-slate-400 font-mono text-[10px] mr-2">
+                    {new Date(chunk.timestamp).toLocaleTimeString()}
+                  </span>
+                  {chunk.transcript_chunk}
+                </p>
+              ))}
+              <div ref={transcriptEndRef} />
+            </div>
+          </div>
+        )}
+
         {/* PROMOTIONS BANNERS (Conditional pop-up) */}
         {callStep === 'ACTIVE' && showPromos && (
           <div className="absolute bottom-6 left-6 right-6 flex flex-col gap-3 z-10 pointer-events-none">
             {visiblePromos.map((promo, index) => (
-              <div 
+              <div
                 key={promo.id}
                 className="bg-white rounded-xl shadow-[0_10px_40px_rgb(0,0,0,0.18)] border border-emerald-100 p-4 flex items-center justify-between transform transition-all hover:-translate-y-1 animate-in slide-in-from-bottom-6 duration-300 group pointer-events-auto"
                 style={{ marginBottom: index * -8, zIndex: promotionsList.length - index }}
@@ -437,16 +533,16 @@ const ActiveCall: React.FC = () => {
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
-                  <button 
+                  <button
                     onClick={() => setSelectedPromoId(promo.id)}
                     className="px-6 py-2 bg-emerald-600 text-white text-sm font-bold rounded-lg hover:bg-emerald-700 transition-colors shadow-sm"
                   >
                     View Details
                   </button>
-                  <button 
+                  <button
                     onClick={(e) => {
-                        e.stopPropagation();
-                        setDismissedPromoIds(prev => [...prev, promo.id]);
+                      e.stopPropagation();
+                      setDismissedPromoIds(prev => [...prev, promo.id]);
                     }}
                     className="p-2 text-slate-300 hover:text-rose-500 transition-colors rounded-lg hover:bg-rose-50"
                   >
@@ -460,235 +556,269 @@ const ActiveCall: React.FC = () => {
 
         {/* CLIENT SUMMARY (Initial State Overlay) */}
         {callStep === 'SUMMARY' && (
-           <div 
-             className="absolute z-[100] bg-white rounded-2xl shadow-[0_20px_60px_-15px_rgba(0,0,0,0.3)] border border-slate-200 flex flex-col w-[540px] animate-in zoom-in-95 duration-200"
-             style={{ top: popupPos.y, left: popupPos.x }}
-           >
-              <div 
-                onMouseDown={handleMouseDown}
-                className="bg-emerald-900 px-6 py-4 flex items-center justify-between rounded-t-2xl text-white cursor-move active:cursor-grabbing"
+          <div
+            className="absolute z-[100] bg-white rounded-2xl shadow-[0_20px_60px_-15px_rgba(0,0,0,0.3)] border border-slate-200 flex flex-col w-[540px] animate-in zoom-in-95 duration-200"
+            style={{ top: popupPos.y, left: popupPos.x }}
+          >
+            <div
+              onMouseDown={handleMouseDown}
+              className="bg-emerald-900 px-6 py-4 flex items-center justify-between rounded-t-2xl text-white cursor-move active:cursor-grabbing"
+            >
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-white/10 rounded-lg"><User className="w-5 h-5 text-emerald-300" /></div>
+                <div>
+                  <h3 className="text-sm font-bold leading-none">
+                    {selectedSummaryInteraction !== null ? 'Interaction Details' : 'Client Summary'}
+                  </h3>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <MousePointer2 className="w-3.5 h-3.5 text-emerald-500" />
+              </div>
+            </div>
+
+            <div className="p-6 overflow-y-auto max-h-[500px] custom-scrollbar space-y-8 bg-white min-h-[300px]">
+              {selectedSummaryInteraction === null ? (
+                <>
+                  <div>
+                    <div className="flex items-center justify-between mb-4">
+                      <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                        <Clock className="w-3.5 h-3.5" /> Recent Interactions
+                      </h4>
+                    </div>
+                    <div className="space-y-4 relative before:absolute before:left-[11px] before:top-2 before:bottom-2 before:w-px before:bg-slate-100">
+                      {mockCustomer.interactions?.map((it, idx) => (
+                        <button
+                          key={idx}
+                          onClick={() => setSelectedSummaryInteraction(idx)}
+                          className="w-full flex gap-4 relative group text-left outline-none"
+                        >
+                          <div className={`w-[23px] h-[23px] rounded-full flex items-center justify-center flex-shrink-0 z-10 transition-colors ${idx === 0 ? 'bg-emerald-500 text-white' : 'bg-white border border-slate-200 text-slate-400'} group-hover:bg-emerald-600 group-hover:text-white`}>
+                            {it.type === 'Call' ? <Phone className="w-3 h-3" /> : <Building2 className="w-3 h-3" />}
+                          </div>
+                          <div className="flex-1 bg-slate-50/50 p-3 rounded-xl border border-transparent hover:border-slate-200 hover:bg-white transition-all flex items-center justify-between">
+                            <div>
+                              <div className="flex justify-between items-center mb-1">
+                                <span className="text-xs font-bold text-slate-800">{it.type}: {it.reason}</span>
+                              </div>
+                              <span className="text-[10px] font-medium text-slate-400">{it.date}</span>
+                            </div>
+                            <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-emerald-500 transition-colors" />
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="bg-rose-50 border border-rose-100 rounded-xl p-4">
+                    <div className="flex items-center gap-2 text-rose-700 mb-2">
+                      <AlertCircle className="w-4 h-4" />
+                      <span className="text-[10px] font-bold uppercase tracking-wider">Unresolved Issues</span>
+                    </div>
+                    <p className="text-xs text-rose-900 font-bold mb-1">Summary Insights</p>
+                    {callSummary?.rolling_summary ? (
+                      <p className="text-[11px] text-rose-800 leading-relaxed">{callSummary.rolling_summary.crm_paragraph || 'System identified pending items from this interaction.'}</p>
+                    ) : (
+                      <p className="text-[11px] text-rose-800 leading-relaxed">System identified a failed 'Loyalty Credit' application. Customer likely calling about the $35.00 discrepancy.</p>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="animate-in fade-in slide-in-from-right-4 duration-200 space-y-6">
+                  <button
+                    onClick={() => setSelectedSummaryInteraction(null)}
+                    className="flex items-center gap-2 text-xs font-bold text-emerald-600 hover:text-emerald-700 transition-colors group"
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform" /> Back to Interactions
+                  </button>
+
+                  <div className="space-y-5">
+                    <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 shadow-sm">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Interaction Reason</label>
+                      <p className="text-sm font-bold text-slate-800">{mockCustomer.interactions![selectedSummaryInteraction].reason}</p>
+                    </div>
+
+                    <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Agent Action</label>
+                      <p className="text-sm text-slate-700 leading-relaxed font-medium">
+                        {mockCustomer.interactions![selectedSummaryInteraction].agentAction}
+                      </p>
+                    </div>
+
+                    <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-4 shadow-sm">
+                      <label className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest block mb-2">Interaction Outcome</label>
+                      <p className="text-sm font-bold text-emerald-800">{mockCustomer.interactions![selectedSummaryInteraction].outcome}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 border-t border-slate-100 flex justify-end bg-slate-50/50 rounded-b-2xl">
+              <button
+                onClick={() => setCallStep('ACTIVE')}
+                className="px-6 py-2.5 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-black transition-colors shadow-lg"
               >
-                 <div className="flex items-center gap-3">
-                   <div className="p-2 bg-white/10 rounded-lg"><User className="w-5 h-5 text-emerald-300" /></div>
-                   <div>
-                     <h3 className="text-sm font-bold leading-none">
-                       {selectedSummaryInteraction !== null ? 'Interaction Details' : 'Client Summary'}
-                     </h3>
-                   </div>
-                 </div>
-                 <div className="flex items-center gap-2">
-                    <MousePointer2 className="w-3.5 h-3.5 text-emerald-500" />
-                 </div>
-              </div>
-              
-              <div className="p-6 overflow-y-auto max-h-[500px] custom-scrollbar space-y-8 bg-white min-h-[300px]">
-                 {selectedSummaryInteraction === null ? (
-                   <>
-                    <div>
-                        <div className="flex items-center justify-between mb-4">
-                        <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                            <Clock className="w-3.5 h-3.5" /> Recent Interactions
-                        </h4>
-                        </div>
-                        <div className="space-y-4 relative before:absolute before:left-[11px] before:top-2 before:bottom-2 before:w-px before:bg-slate-100">
-                        {mockCustomer.interactions?.map((it, idx) => (
-                            <button 
-                              key={idx} 
-                              onClick={() => setSelectedSummaryInteraction(idx)}
-                              className="w-full flex gap-4 relative group text-left outline-none"
-                            >
-                            <div className={`w-[23px] h-[23px] rounded-full flex items-center justify-center flex-shrink-0 z-10 transition-colors ${idx === 0 ? 'bg-emerald-500 text-white' : 'bg-white border border-slate-200 text-slate-400'} group-hover:bg-emerald-600 group-hover:text-white`}>
-                                {it.type === 'Call' ? <Phone className="w-3 h-3" /> : <Building2 className="w-3 h-3" />}
-                            </div>
-                            <div className="flex-1 bg-slate-50/50 p-3 rounded-xl border border-transparent hover:border-slate-200 hover:bg-white transition-all flex items-center justify-between">
-                                <div>
-                                    <div className="flex justify-between items-center mb-1">
-                                    <span className="text-xs font-bold text-slate-800">{it.type}: {it.reason}</span>
-                                    </div>
-                                    <span className="text-[10px] font-medium text-slate-400">{it.date}</span>
-                                </div>
-                                <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-emerald-500 transition-colors" />
-                            </div>
-                            </button>
-                        ))}
-                        </div>
-                    </div>
-
-                    <div className="bg-rose-50 border border-rose-100 rounded-xl p-4">
-                        <div className="flex items-center gap-2 text-rose-700 mb-2">
-                        <AlertCircle className="w-4 h-4" />
-                        <span className="text-[10px] font-bold uppercase tracking-wider">Unresolved Issues</span>
-                        </div>
-                        <p className="text-xs text-rose-900 font-bold mb-1">Summary Insights</p>
-                        {callSummary?.rolling_summary ? (
-                          <p className="text-[11px] text-rose-800 leading-relaxed">{callSummary.rolling_summary.crm_paragraph || 'System identified pending items from this interaction.'}</p>
-                        ) : (
-                          <p className="text-[11px] text-rose-800 leading-relaxed">System identified a failed 'Loyalty Credit' application. Customer likely calling about the $35.00 discrepancy.</p>
-                        )}
-                    </div>
-                   </>
-                 ) : (
-                   <div className="animate-in fade-in slide-in-from-right-4 duration-200 space-y-6">
-                      <button 
-                        onClick={() => setSelectedSummaryInteraction(null)}
-                        className="flex items-center gap-2 text-xs font-bold text-emerald-600 hover:text-emerald-700 transition-colors group"
-                      >
-                         <ArrowLeft className="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform" /> Back to Interactions
-                      </button>
-
-                      <div className="space-y-5">
-                         <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 shadow-sm">
-                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Interaction Reason</label>
-                            <p className="text-sm font-bold text-slate-800">{mockCustomer.interactions![selectedSummaryInteraction].reason}</p>
-                         </div>
-                         
-                         <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
-                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Agent Action</label>
-                            <p className="text-sm text-slate-700 leading-relaxed font-medium">
-                              {mockCustomer.interactions![selectedSummaryInteraction].agentAction}
-                            </p>
-                         </div>
-
-                         <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-4 shadow-sm">
-                            <label className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest block mb-2">Interaction Outcome</label>
-                            <p className="text-sm font-bold text-emerald-800">{mockCustomer.interactions![selectedSummaryInteraction].outcome}</p>
-                         </div>
-                      </div>
-                   </div>
-                 )}
-              </div>
-              
-              <div className="p-4 border-t border-slate-100 flex justify-end bg-slate-50/50 rounded-b-2xl">
-                 <button 
-                  onClick={() => setCallStep('ACTIVE')}
-                  className="px-6 py-2.5 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-black transition-colors shadow-lg"
-                 >
-                    Dismiss
-                 </button>
-              </div>
-           </div>
+                Dismiss
+              </button>
+            </div>
+          </div>
         )}
       </div>
 
       {/* PROMO DETAIL MODAL */}
       {selectedPromoId && selectedPromo && (
         <div className="fixed inset-0 z-[300] flex items-center justify-center bg-slate-900/60 backdrop-blur-md p-6">
-           <div className="bg-white w-full max-w-3xl rounded-3xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-slate-200">
-              <div className="bg-emerald-700 p-8 text-white relative">
-                 <button onClick={() => setSelectedPromoId(null)} className="absolute top-6 right-6 text-emerald-100 hover:text-white transition-all bg-white/20 hover:bg-white/30 rounded-full p-2.5 border border-white/20 group">
-                    <X className="w-5 h-5 group-hover:scale-110 transition-transform" />
-                 </button>
-                 <div className="flex items-center gap-6">
-                    <div className="w-16 h-16 bg-white/10 rounded-2xl flex items-center justify-center backdrop-blur-md border border-white/20"><Sparkles className="w-10 h-10 text-emerald-100" /></div>
-                    <div>
-                        <h3 className="text-3xl font-extrabold tracking-tight">{selectedPromo.title}</h3>
-                        <div className="flex items-center gap-3 mt-2">
-                           <span className="text-emerald-100 text-xs font-mono bg-emerald-800/50 px-3 py-1 rounded border border-emerald-600 uppercase tracking-widest">{selectedPromo.code}</span>
-                           <div className="flex items-center gap-1.5 text-emerald-200 text-xs font-bold bg-emerald-900/40 px-3 py-1 rounded-full">
-                              <CalendarClock className="w-3.5 h-3.5" /> Expiry: {selectedPromo.expiry}
-                           </div>
-                        </div>
+          <div className="bg-white w-full max-w-3xl rounded-3xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-slate-200">
+            <div className="bg-emerald-700 p-8 text-white relative">
+              <button onClick={() => setSelectedPromoId(null)} className="absolute top-6 right-6 text-emerald-100 hover:text-white transition-all bg-white/20 hover:bg-white/30 rounded-full p-2.5 border border-white/20 group">
+                <X className="w-5 h-5 group-hover:scale-110 transition-transform" />
+              </button>
+              <div className="flex items-center gap-6">
+                <div className="w-16 h-16 bg-white/10 rounded-2xl flex items-center justify-center backdrop-blur-md border border-white/20"><Sparkles className="w-10 h-10 text-emerald-100" /></div>
+                <div>
+                  <h3 className="text-3xl font-extrabold tracking-tight">{selectedPromo.title}</h3>
+                  <div className="flex items-center gap-3 mt-2">
+                    <span className="text-emerald-100 text-xs font-mono bg-emerald-800/50 px-3 py-1 rounded border border-emerald-600 uppercase tracking-widest">{selectedPromo.code}</span>
+                    <div className="flex items-center gap-1.5 text-emerald-200 text-xs font-bold bg-emerald-900/40 px-3 py-1 rounded-full">
+                      <CalendarClock className="w-3.5 h-3.5" /> Expiry: {selectedPromo.expiry}
                     </div>
-                 </div>
+                  </div>
+                </div>
               </div>
-              
-              <div className="p-8 grid grid-cols-1 md:grid-cols-2 gap-10 bg-slate-50/30 overflow-y-auto max-h-[70vh] custom-scrollbar">
-                 <div className="space-y-8">
-                    <div>
-                        <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-2">
-                           <Info className="w-4 h-4 text-emerald-600" /> Promotion Details
-                        </h4>
-                        <p className="text-sm text-slate-700 leading-relaxed font-medium bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">{selectedPromo.description}</p>
-                    </div>
-                    <div>
-                        <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-2">
-                           <UserCheck className="w-4 h-4 text-emerald-600" /> Eligibility Criteria
-                        </h4>
-                        <div className="bg-emerald-50/50 p-4 rounded-2xl border border-emerald-100 text-sm text-emerald-900 font-medium italic">"{selectedPromo.eligibility}"</div>
-                    </div>
-                 </div>
+            </div>
 
-                 <div className="space-y-8">
-                    <div>
-                        <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-2">
-                           <ListChecks className="w-4 h-4 text-emerald-600" /> Fulfillment Steps
-                        </h4>
-                        <div className="space-y-3">
-                           {selectedPromo.steps.map((step, i) => (
-                             <div key={i} className="flex gap-3 items-start bg-white p-3 rounded-xl border border-slate-100 shadow-sm">
-                                <div className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-[10px] font-bold flex-shrink-0 mt-0.5">{i+1}</div>
-                                <span className="text-xs text-slate-700 font-medium leading-normal">{step}</span>
-                             </div>
-                           ))}
-                        </div>
-                    </div>
-                 </div>
+            <div className="p-8 grid grid-cols-1 md:grid-cols-2 gap-10 bg-slate-50/30 overflow-y-auto max-h-[70vh] custom-scrollbar">
+              <div className="space-y-8">
+                <div>
+                  <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-2">
+                    <Info className="w-4 h-4 text-emerald-600" /> Promotion Details
+                  </h4>
+                  <p className="text-sm text-slate-700 leading-relaxed font-medium bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">{selectedPromo.description}</p>
+                </div>
+                <div>
+                  <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-2">
+                    <UserCheck className="w-4 h-4 text-emerald-600" /> Eligibility Criteria
+                  </h4>
+                  <div className="bg-emerald-50/50 p-4 rounded-2xl border border-emerald-100 text-sm text-emerald-900 font-medium italic">"{selectedPromo.eligibility}"</div>
+                </div>
               </div>
-              <div className="h-4 bg-slate-50 border-t border-slate-100"></div>
-           </div>
+
+              <div className="space-y-8">
+                <div>
+                  <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-2">
+                    <ListChecks className="w-4 h-4 text-emerald-600" /> Fulfillment Steps
+                  </h4>
+                  <div className="space-y-3">
+                    {selectedPromo.steps.map((step, i) => (
+                      <div key={i} className="flex gap-3 items-start bg-white p-3 rounded-xl border border-slate-100 shadow-sm">
+                        <div className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-[10px] font-bold flex-shrink-0 mt-0.5">{i + 1}</div>
+                        <span className="text-xs text-slate-700 font-medium leading-normal">{step}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="h-4 bg-slate-50 border-t border-slate-100"></div>
+          </div>
         </div>
       )}
 
       {/* CALL RECAP MODAL (Displayed once hanging up) */}
       {callStep === 'RECAP' && (
-         <div className="absolute inset-0 z-[400] flex items-center justify-center bg-slate-900/80 backdrop-blur-sm p-4">
-            <div className="bg-white w-full max-w-5xl rounded-3xl shadow-2xl overflow-hidden animate-in slide-in-from-bottom-12 duration-500 flex flex-col border border-white/20">
-               <div className="px-8 py-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 bg-emerald-600 rounded-xl shadow-lg shadow-emerald-200"><Check className="w-6 h-6 text-white" /></div>
-                    <h3 className="text-2xl font-extrabold text-slate-900 tracking-tight">Call Recap</h3>
-                  </div>
-                  <div className="text-xs font-bold text-slate-500 bg-slate-100 px-4 py-2 rounded-xl border border-slate-200 tracking-wider font-mono">ID: #CALL-99283</div>
-               </div>
-               
-               <div className="p-10 grid grid-cols-1 md:grid-cols-2 gap-10 overflow-y-auto max-h-[70vh]">
-                  <div className="space-y-8">
-                     <div>
-                        <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Call Reason</label>
-                        <textarea className="w-full h-28 p-4 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-medium focus:ring-2 focus:ring-emerald-500 outline-none transition-all resize-none shadow-inner" defaultValue={callSummary?.rolling_summary?.crm_paragraph || "Customer identified recurring overcharge in Enterprise Plan upgrade. Expressed frustration over billing complexity and requested immediate audit of October transactions."} />
-                     </div>
-                     <div>
-                        <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Resolution Outcome</label>
-                        <select className="w-full p-4 bg-white border border-slate-300 rounded-2xl text-sm font-bold text-slate-700 shadow-sm focus:ring-2 focus:ring-emerald-500">
-                           <option>Resolved - Customer Satisfied</option>
-                           <option>Escalated to Billing Support</option>
-                           <option>Partial Resolution - Pending Action</option>
-                           <option>{isLoadingSummary ? 'Loading summary...' : 'Auto-classified'}</option>
-                        </select>
-                     </div>
-                  </div>
-
-                  <div className="space-y-8">
-                     <div>
-                        <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Actions Performed</label>
-                        <textarea className="w-full h-28 p-4 bg-white border border-slate-300 rounded-2xl text-sm font-medium focus:ring-2 focus:ring-emerald-500 shadow-sm resize-none leading-relaxed" placeholder="Detailed resolution steps taken..." defaultValue={callSummary?.history_summary || "Reversed Oct 15th surcharge on Chequing (...8849). Manually updated account status to 'Verified Premium'. Sent confirmation email #CF-8829."} />
-                     </div>
-                     <div className="bg-slate-50 border border-slate-200 p-6 rounded-2xl shadow-inner">
-                        <div className="flex items-center justify-between mb-4">
-                             <label className="flex items-center gap-3 cursor-pointer" onClick={() => setCallbackRequired(!callbackRequired)}>
-                                <div className={`w-6 h-6 rounded-lg border flex items-center justify-center transition-all ${callbackRequired ? 'bg-emerald-600 border-emerald-600 shadow-md shadow-emerald-200' : 'bg-white border-slate-300'}`}>
-                                    {callbackRequired && <Check className="w-4 h-4 text-white" />}
-                                </div>
-                                <span className="text-sm font-bold text-slate-800 tracking-tight">Schedule Follow-up Call</span>
-                             </label>
-                        </div>
-                        {callbackRequired && (
-                            <div className="flex gap-3 animate-in slide-in-from-top-3">
-                                <input type="date" className="flex-1 p-3 bg-white border border-slate-300 rounded-xl text-sm shadow-sm font-medium" />
-                                <input type="time" className="w-32 p-3 bg-white border border-slate-300 rounded-xl text-sm shadow-sm font-medium" />
-                            </div>
-                        )}
-                     </div>
-                  </div>
-               </div>
-               
-               <div className="px-10 py-8 bg-slate-50 border-t border-slate-200 flex justify-end gap-5 flex-shrink-0">
-                  <button onClick={() => window.location.reload()} className="px-14 py-3.5 bg-emerald-600 text-white font-bold rounded-2xl hover:bg-emerald-700 transition-all shadow-xl hover:shadow-emerald-200 flex items-center gap-3 text-sm">
-                    <Save className="w-5 h-5" /> Complete Session
-                  </button>
-               </div>
+        <div className="absolute inset-0 z-[400] flex items-center justify-center bg-slate-900/80 backdrop-blur-sm p-4">
+          <div className="bg-white w-full max-w-5xl rounded-3xl shadow-2xl overflow-hidden animate-in slide-in-from-bottom-12 duration-500 flex flex-col border border-white/20">
+            <div className="px-8 py-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-emerald-600 rounded-xl shadow-lg shadow-emerald-200"><Check className="w-6 h-6 text-white" /></div>
+                <h3 className="text-2xl font-extrabold text-slate-900 tracking-tight">Call Recap</h3>
+              </div>
+              <div className="text-xs font-bold text-slate-500 bg-slate-100 px-4 py-2 rounded-xl border border-slate-200 tracking-wider font-mono">ID: #CALL-99283</div>
             </div>
-         </div>
+
+            <div className="p-10 grid grid-cols-1 md:grid-cols-2 gap-10 overflow-y-auto max-h-[70vh]">
+              <div className="space-y-8">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Call Summary</label>
+                  {isLoadingSummary ? (
+                    <div className="w-full h-28 bg-slate-50 border border-slate-200 rounded-2xl flex items-center justify-center gap-3">
+                      <Loader2 className="w-5 h-5 text-emerald-500 animate-spin" />
+                      <span className="text-sm text-slate-400 font-medium">Generating summary...</span>
+                    </div>
+                  ) : (
+                    <textarea ref={recapSummaryRef} className="w-full h-28 p-4 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-medium focus:ring-2 focus:ring-emerald-500 outline-none transition-all resize-none shadow-inner" defaultValue={callSummary?.rolling_summary?.crm_paragraph || ''} placeholder="Call summary will appear here after processing..." />
+                  )}
+                  {summaryError && (
+                    <p className="text-xs text-amber-600 mt-2 flex items-center gap-1">
+                      <AlertCircle className="w-3 h-3" /> {summaryError}
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Resolution Outcome</label>
+                  <select className="w-full p-4 bg-white border border-slate-300 rounded-2xl text-sm font-bold text-slate-700 shadow-sm focus:ring-2 focus:ring-emerald-500">
+                    <option>Resolved - Customer Satisfied</option>
+                    <option>Escalated to Billing Support</option>
+                    <option>Partial Resolution - Pending Action</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="space-y-8">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Actions Performed</label>
+                  <textarea ref={recapActionsRef} className="w-full h-28 p-4 bg-white border border-slate-300 rounded-2xl text-sm font-medium focus:ring-2 focus:ring-emerald-500 shadow-sm resize-none leading-relaxed" placeholder="Detailed resolution steps taken..." defaultValue={
+                    callSummary?.rolling_summary?.bullets
+                      ?.map((b: any) => [b.agent_action, b.next_step ? `Next: ${b.next_step}` : ''].filter(Boolean).join(' — '))
+                      .join('\n') || ''
+                  } />
+                </div>
+                <div className="bg-slate-50 border border-slate-200 p-6 rounded-2xl shadow-inner">
+                  <div className="flex items-center justify-between mb-4">
+                    <label className="flex items-center gap-3 cursor-pointer" onClick={() => setCallbackRequired(!callbackRequired)}>
+                      <div className={`w-6 h-6 rounded-lg border flex items-center justify-center transition-all ${callbackRequired ? 'bg-emerald-600 border-emerald-600 shadow-md shadow-emerald-200' : 'bg-white border-slate-300'}`}>
+                        {callbackRequired && <Check className="w-4 h-4 text-white" />}
+                      </div>
+                      <span className="text-sm font-bold text-slate-800 tracking-tight">Schedule Follow-up Call</span>
+                    </label>
+                  </div>
+                  {callbackRequired && (
+                    <div className="flex gap-3 animate-in slide-in-from-top-3">
+                      <input type="date" className="flex-1 p-3 bg-white border border-slate-300 rounded-xl text-sm shadow-sm font-medium" />
+                      <input type="time" className="w-32 p-3 bg-white border border-slate-300 rounded-xl text-sm shadow-sm font-medium" />
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="px-10 py-8 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-5 flex-shrink-0">
+              <div>
+                {saveError && (
+                  <p className="text-sm text-rose-600 flex items-center gap-1.5">
+                    <AlertCircle className="w-4 h-4" /> {saveError}
+                  </p>
+                )}
+                <p className="text-[10px] text-slate-400 font-mono">Call ID: {callId}</p>
+              </div>
+              <button
+                onClick={handleSaveSession}
+                disabled={isSaving || isLoadingSummary}
+                className={`px-14 py-3.5 font-bold rounded-2xl transition-all shadow-xl flex items-center gap-3 text-sm ${isSaving || isLoadingSummary
+                  ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                  : 'bg-emerald-600 text-white hover:bg-emerald-700 hover:shadow-emerald-200'
+                  }`}
+              >
+                {isSaving ? (
+                  <><Loader2 className="w-5 h-5 animate-spin" /> Saving...</>
+                ) : (
+                  <><Save className="w-5 h-5" /> Complete Session</>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ACCOUNT DETAILS POPUP */}
@@ -709,12 +839,12 @@ const ActiveCall: React.FC = () => {
             <div className="p-10 space-y-8">
               <div className="grid grid-cols-2 gap-8">
                 <div>
-                   <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest mb-1.5">Account Status</p>
-                   <p className="text-base font-bold text-emerald-600 flex items-center gap-2">Active <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></div></p>
+                  <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest mb-1.5">Account Status</p>
+                  <p className="text-base font-bold text-emerald-600 flex items-center gap-2">Active <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></div></p>
                 </div>
                 <div>
-                   <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest mb-1.5">Current Rate</p>
-                   <p className="text-base font-bold text-slate-800">4.50% APY</p>
+                  <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest mb-1.5">Current Rate</p>
+                  <p className="text-base font-bold text-slate-800">4.50% APY</p>
                 </div>
               </div>
               <button onClick={() => setSelectedAccount(null)} className="w-full py-4 bg-emerald-600 text-white font-bold rounded-2xl hover:bg-emerald-700 transition-all shadow-lg hover:shadow-emerald-200">Close Account View</button>

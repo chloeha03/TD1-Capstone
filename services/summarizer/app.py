@@ -283,6 +283,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Summarizer Service", lifespan=lifespan)
 
 
+
 # ============== Request/Response Models ==============
 
 class GetSummaryResponse(BaseModel):
