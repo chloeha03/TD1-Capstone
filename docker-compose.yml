@@ -45,17 +45,17 @@ services:
     restart: on-failure
     environment:
       - REDIS_HOST=redis
-      - WHISPER_MODEL=medium.en
+      - WHISPER_MODEL=small.en
       - WHISPER_DEVICE=cuda
       - WHISPER_COMPUTE=float16
-      - WHISPER_MODEL_PATH=/app/models/whisper
+      - WHISPER_MODEL_PATH=/app/models/whisper-small
     ports:
       - "8001:8000"
     depends_on:
       redis:
         condition: service_healthy
     volumes:
-      - ./models/whisper:/app/models/whisper
+      - ./models/whisper-small:/app/models/whisper-small
     deploy:
       resources:
         reservations:
@@ -63,6 +63,7 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    profiles: ["gpu"]
 
   # --- Transcription Service (CPU) ---
   transcriber_cpu:
@@ -75,17 +76,17 @@ services:
     restart: on-failure
     environment:
       - REDIS_HOST=redis
-      - WHISPER_MODEL=medium.en
+      - WHISPER_MODEL=small.en
       - WHISPER_DEVICE=cpu
       - WHISPER_COMPUTE=int8
-      - WHISPER_MODEL_PATH=/app/models/whisper
+      - WHISPER_MODEL_PATH=/app/models/whisper-small
     ports:
       - "8001:8000"
     depends_on:
       redis:
         condition: service_healthy
     volumes:
-      - ./models/whisper:/app/models/whisper
+      - ./models/whisper-small:/app/models/whisper-small
     profiles: ["cpu"]
 
   # --- Summarizer Service ---

@@ -125,3 +125,48 @@ docker exec -it td_db psql -U postgres -d td_poc -c "SELECT * FROM interaction;"
 docker exec -it td_redis redis-cli SMEMBERS active_calls
 docker exec -it td_redis redis-cli GET "call:call_123:summary"
 ```
+
+# Run full prototype
+
+## Backend
+
+First need to download the llama model (can download the cuda version of pytorch if you have a GPU)<br>
+You also need a huggingface token and request access to Llama 3, exported as `HF_TOKEN` <br>
+Linux/Mac: `export HF_TOKEN=<your token>`<br>
+Windows cmd: `set HF_TOKEN=<your token>`<br>
+
+```
+pip install -r requirements.txt
+python services/summarizer/download_model.py
+python services/transcriber/download_model.py
+```
+
+Start the backend databases and services:
+
+If you have one GPU, it may be faster to run whisper on CPU
+```
+docker compose --profile cpu up --build
+```
+
+Otherwise, to run on GPU use
+```
+docker compose --profile gpu up --build
+```
+
+Wait for llama model to be loaded into memory.
+
+## Frontend
+
+To run frontend:
+
+- download node.js
+- cd into the `frontend` folder, run `npm install`, then `npm run dev`
+- go to the local dev link that is displayed
+
+## Shutting down
+Shut down back end: `CTRL+C` if run without detach, otherwise:
+```
+docker compose down
+```
+
+Shut down front end: `CTRL+C`

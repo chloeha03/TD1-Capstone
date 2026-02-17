@@ -3,8 +3,8 @@ import os
 import shutil
 from faster_whisper import WhisperModel
 
-DEFAULT_MODEL = "medium.en"
-DEFAULT_OUTPUT = "models/whisper"
+DEFAULT_MODEL = "small.en"
+DEFAULT_OUTPUT = "models/whisper-small"
 
 def main():
     parser = argparse.ArgumentParser()
