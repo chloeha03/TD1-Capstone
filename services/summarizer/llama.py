@@ -444,33 +444,6 @@ JSON SCHEMA:
         )
     }
 
-### TODO: figure out if we still need these/where to use them
-
-def finalize_call(client_id, rolling_call_summary, client_history_summary):
-    rolling_text = call_summary_to_text(rolling_call_summary)
-
-    prompt = f"""
-You are a TD call summarizer.
-
-Write a final case note for the agent.
-
-Include call reason, key actions, outcome, unresolved items.
-
-Rolling call summary:
-{rolling_text}
-
-Client history summary:
-{client_history_summary}
-
-Output JSON only:
-{{ "final_summary": "..." }}
-"""
-    raw = llama_generate(prompt, max_tokens=256, temperature=0.2)
-
-    return parse_json_or_fallback(
-        raw,
-        fallback={"final_summary": str(raw)}
-    )
 
 def build_json_prompt(text):
     return f"""
@@ -560,7 +533,7 @@ def merge_chunk_summaries(results):
     }
     return final
 
-def summarize_long_text(text, chunk_size=700, overlap=80):
+def summarize_long_text(text, chunk_size=1200, overlap=50):
     chunks = chunk_text_by_tokens(text, chunk_size=chunk_size, overlap=overlap)
     results = []
     for i, ch in enumerate(chunks):
@@ -582,10 +555,6 @@ def _mock_client_summarizer(chunk_text, client_profile, current_history):
 def _mock_promoter(chunk_text, client_profile, promotion_catalog):
     return {"recommendations": [], "no_relevant_flag": True}
 
-def _mock_finalize_call(client_id, rolling_call_summary, client_history_summary):
-    text = call_summary_to_text(rolling_call_summary)
-    return {"final_summary": f"[MOCK FINAL] {text}"}
-
 def _mock_llama_processing_layer(client_id, chunk_text, client_profile, client_history_summary, promotion_catalog, redis_store):
     return {
         "call_rolling_summary": _mock_call_summarizer(chunk_text),
@@ -600,5 +569,4 @@ if USE_MOCK:
     call_summarizer = _mock_call_summarizer
     client_summarizer = _mock_client_summarizer
     promoter = _mock_promoter
-    finalize_call = _mock_finalize_call
     llama_processing_layer = _mock_llama_processing_layer
