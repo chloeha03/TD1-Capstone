@@ -414,6 +414,12 @@ OUTPUT RULES:
 3. 'history_summary': Update ongoing client history with facts from this chunk.
 4. 'promotions': Recommend up to 2 promo_ids from the catalog only if relevant.
 
+PROMOTION RELEVANCE:
+A promotion is relevant only when it:
+- Addresses a current client issue or next actionable step, AND
+- The client is eligible for the promotion, AND
+- Offering the promotion is appropriate given the client’s current context (e.g. do not offer a credit card promotion to a client with recent credit issues, disputed charges, or billing complaints).
+
 JSON SCHEMA:
 {{
   "call_rolling_summary": {{

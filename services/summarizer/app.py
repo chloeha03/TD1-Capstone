@@ -8,7 +8,7 @@ import threading
 import json
 import redis
 
-from db.db import DatabaseManager, InteractionRepository, CustomerRepository, PromotionRepository, create_er_database_safe
+from db.db import DatabaseManager, InteractionRepository, CustomerRepository, PromotionRepository, PromotionOfferRepository, create_er_database_safe
 from llama import llama_processing_layer, _load_model
 
 # Configuration
@@ -42,6 +42,7 @@ db = DatabaseManager(
 interaction_repo = InteractionRepository(db)
 customer_repo = CustomerRepository(db)
 promo_repo = PromotionRepository(db)
+promo_offer_repo = PromotionOfferRepository(db)
 
 # Redis connection
 redis_client = redis.Redis(host=REDIS_HOST, port=6379, decode_responses=True)
@@ -304,8 +305,60 @@ class SaveSummaryResponse(BaseModel):
     interaction_id: int
     summary: str
 
+class CustomerHistoryResponse(BaseModel):
+    customer_id: int
+    profile: dict
+    interactions: list
+    promotions_offered: list
+
 
 # ============== Endpoints ==============
+@app.get("/customer_history/{customer_id}", response_model=CustomerHistoryResponse)
+def get_customer_history(customer_id: int):
+    """
+    Fetch customer history for display at the beginning of a call.
+    Includes:
+    - Profile info
+    - Past interactions
+    - Promotions offered
+    """
+    try:
+        # 1. Fetch Customer
+        customer = customer_repo.get_by_id(customer_id)
+        if not customer:
+            raise HTTPException(status_code=404, detail="Customer not found")
+
+        # 2. Fetch Interactions
+        interactions = interaction_repo.get_for_customer(customer_id)
+
+        # 3. Fetch Promotions Offered (via repository)
+        offers = promo_offer_repo.get_for_customer(customer_id)
+
+        # 4. Format profile cleanly
+        profile = {
+            "name": f"{customer['first_name']} {customer['last_name']}",
+            "preferred_name": customer.get("preferred_name"),
+            "phone_number": customer.get("phone_number"),
+            "total_assets": float(customer["total_assets"]) if customer.get("total_assets") else None,
+            "address": customer.get("address"),
+            "employment_info": customer.get("employment_info"),
+            "financial_data": customer.get("financial_data"),
+            "call_reason": customer.get("call_reason"),
+            "contact_center": customer.get("contact_center"),
+        }
+
+        return {
+            "customer_id": customer_id,
+            "profile": profile,
+            "interactions": interactions,
+            "promotions_offered": offers,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/summary/{call_id}", response_model=GetSummaryResponse)
 def get_summary(call_id: str):
     """
