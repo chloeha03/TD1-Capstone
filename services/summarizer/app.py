@@ -118,7 +118,7 @@ class SummarizerWorker(threading.Thread):
         Push call_id to queue only if not already pending.
         """
         self.r.set(f"call:{call_id}:last_summary_ts", time.time(), nx=True)
-        
+
         if self.r.sadd(self.PENDING_SET, call_id):
             self.r.rpush(self.QUEUE_NAME, call_id)
 
@@ -192,10 +192,7 @@ class SummarizerWorker(threading.Thread):
 
         pipe = self.r.pipeline()
         pipe.set(f"call:{call_id}:summary", json.dumps(result["call_rolling_summary"]))
-        pipe.set(
-            f"call:{call_id}:history",
-            result["client_history_summary"].get("history_summary", ""),
-        )
+        pipe.set(f"call:{call_id}:history", json.dumps(result["client_history_summary"]))
         pipe.set(
             f"call:{call_id}:promotions",
             json.dumps(result["promotion_recommendations"]),
@@ -237,7 +234,7 @@ async def lifespan(app: FastAPI):
     if CLEAN_ON_START:
         print("[App] Cleaning Redis...")
         redis_client.flushall()
-        
+
         print("[App] Cleaning and reseeding Postgres...")
         try:
             # 1. Truncate Tables
@@ -249,25 +246,25 @@ async def lifespan(app: FastAPI):
                 "first_name": "John",
                 "last_name": "Smith",
                 "total_assets": 150000.00,
-                "address": None, "employment_info": None, "accounts": [], 
+                "address": None, "employment_info": None, "accounts": [],
                 "call_reason": None, "contact_center": None
             })
-            
+
             customer_repo.upsert_from_payload({
                 "customer_id": 2,
                 "first_name": "Jane",
                 "last_name": "Doe",
                 "total_assets": 250000.00,
-                "address": None, "employment_info": None, "accounts": [], 
+                "address": None, "employment_info": None, "accounts": [],
                 "call_reason": None, "contact_center": None
             })
 
             # 3. Seed Promotions
             promo_repo.create(
-                description='10% off credit card annual fee', 
+                description='10% off credit card annual fee',
                 conditions_dict={"min_assets": 100000}
             )
-            
+
             print("[App] Cleanup complete.")
         except Exception as e:
             print(f"[App] Cleanup warning: {e}")
@@ -362,31 +359,31 @@ def get_customer_history(customer_id: int):
 @app.get("/summary/{call_id}", response_model=GetSummaryResponse)
 def get_summary(call_id: str):
     """
-    GET summary for a call. 
+    GET summary for a call.
     1. Polls Redis to see if the background worker finishes the job.
     2. If no one is working on it and chunks remain, processes them immediately.
     """
     try:
         total_chunks = redis_client.llen(f"call:{call_id}:chunks")
         lock_key = f"lock:call:{call_id}"
-        
+
         max_wait = 90
         start_wait = time.time()
-        
+
         while time.time() - start_wait < max_wait:
             last_idx = int(redis_client.get(f"call:{call_id}:processed_index") or 0)
 
             # Case 1: All chunks are already processed
             if last_idx >= total_chunks:
                 break
-            
+
             # Case 2: Check if a worker is currently holding the lock
             lock_owner = redis_client.get(lock_key)
             if lock_owner and lock_owner != "api":
                 # A worker is already processing, so we wait and poll
                 time.sleep(2)
                 continue
-            
+
             # Case 3: No one is processing, API takes over
             if redis_client.set(lock_key, "api", nx=True, ex=LOCK_TTL):
                 try:
@@ -396,7 +393,7 @@ def get_summary(call_id: str):
                         # --- Process Remaining Chunks ---
                         new_chunks = redis_client.lrange(f"call:{call_id}:chunks", current_idx, -1)
                         new_transcript = " ".join(new_chunks)
-                        
+
                         customer_id = redis_client.get(f"call:{call_id}:customer_id") or call_id
                         current_history = redis_client.get(f"call:{call_id}:history") or ""
                         client_profile = get_client_profile(int(customer_id)) if str(customer_id).isdigit() else "Unknown"
@@ -420,7 +417,7 @@ def get_summary(call_id: str):
                     break # Work is done
                 finally:
                     redis_client.delete(lock_key)
-            
+
             time.sleep(1)
 
         # --- Final Data Retrieval ---
@@ -429,7 +426,11 @@ def get_summary(call_id: str):
             raise HTTPException(status_code=404, detail=f"No summary found for call {call_id}")
 
         rolling_summary = json.loads(summary_json) if summary_json else {}
-        history = redis_client.get(f"call:{call_id}:history") or ""
+        history_raw = redis_client.get(f"call:{call_id}:history") or ""
+        try:
+            history_obj = json.loads(history_raw) if history_raw else {}
+        except json.JSONDecodeError:
+            history_obj = {"history_summary": history_raw, "client_summary": history_raw}
         promos_json = redis_client.get(f"call:{call_id}:promotions") or "{}"
         promotions = json.loads(promos_json) if promos_json else {"recommendations": [], "no_relevant_flag": True}
         chunks_processed = int(redis_client.get(f"call:{call_id}:processed_index") or 0)
@@ -437,7 +438,8 @@ def get_summary(call_id: str):
         return {
             "call_id": call_id,
             "rolling_summary": rolling_summary,
-            "history_summary": history,
+            "history_summary": history_obj.get("history_summary", ""),
+            "client_summary": history_obj.get("client_summary", ""),
             "promotions": promotions,
             "chunks_processed": chunks_processed,
         }
@@ -457,7 +459,7 @@ def get_promotions(call_id: str):
         promos_json = redis_client.get(f"call:{call_id}:promotions")
         if not promos_json:
             return {"recommendations": [], "no_relevant_flag": True}
-        
+
         try:
             return json.loads(promos_json)
         except json.JSONDecodeError:

@@ -80,7 +80,7 @@ def _load_model():
             )
 
             print("[llama] Downloaded model from HuggingFace.")
-        
+
         _tokenizer.pad_token = _tokenizer.eos_token
         _model.config.pad_token_id = _tokenizer.eos_token_id
         _model.generation_config.pad_token_id = _tokenizer.eos_token_id
@@ -276,12 +276,26 @@ def validate_promotions(promo_obj, promotion_catalog):
             allowed_ids.add(str(p["promo_id"]))
 
     clean_recs = []
+    catalog_by_id = {}
+    for p in promotion_catalog or []:
+        if isinstance(p, dict) and "promo_id" in p:
+            catalog_by_id[str(p["promo_id"])] = p
     for r in recs:
         if not isinstance(r, dict):
             continue
         pid = str(r.get("promo_id", "")).strip()
         if pid in allowed_ids:
-            clean_recs.append(r)
+            cat = catalog_by_id.get(pid, {})
+            clean_recs.append({
+                "promo_id": pid,
+                "name": r.get("name") or cat.get("name") or cat.get("promotion_name") or "",
+                "promotion_description": r.get("promotion_description") or r.get("description") or cat.get("description") or cat.get("promotion_description") or "",
+                "eligibility_criteria": r.get("eligibility_criteria") or cat.get("eligibility_criteria") or cat.get("eligibility") or "",
+                "fulfillment_steps": r.get("fulfillment_steps") or cat.get("fulfillment_steps") or cat.get("steps") or [],
+                "expiry_date": r.get("expiry_date") or r.get("expiry") or cat.get("expiry_date") or cat.get("expiry") or "",
+                "promotion_code": r.get("promotion_code") or cat.get("promotion_code") or cat.get("code") or "",
+                "reason": r.get("reason", "")
+            })
 
     no_flag = bool(promo_obj.get("no_relevant_flag", False))
     if len(clean_recs) == 0:
@@ -335,50 +349,6 @@ Output JSON only:
     return validate_promotions(promo_obj, promotion_catalog)
 
 
-def llama_processing_layer_old(
-    client_id,
-    chunk_text,
-    client_profile,
-    client_history_summary,
-    promotion_catalog,
-    redis_store
-):
-    """Main processing layer - orchestrates all LLM calls."""
-    # Get current summary from Redis
-    raw_current = redis_store.get(f"call:{client_id}:summary")
-    if raw_current:
-        try:
-            current_obj = json.loads(raw_current)
-        except json.JSONDecodeError:
-            current_obj = {"crm_paragraph": raw_current}
-    else:
-        current_obj = None
-    
-    current_text = call_summary_to_text(current_obj) if current_obj else ""
-
-    call_summary_obj = call_summarizer(
-        chunk_text,
-        current_call_summary_text=current_text
-    )
-
-    updated_history_obj = client_summarizer(
-        chunk_text,
-        client_profile,
-        client_history_summary
-    )
-
-    promo_obj = promoter(
-        chunk_text,
-        client_profile,
-        promotion_catalog
-    )
-
-    return {
-        "call_rolling_summary": call_summary_obj,
-        "client_history_summary": updated_history_obj,
-        "promotion_recommendations": promo_obj
-    }
-
 def llama_processing_layer(
     client_id,
     chunk_text,
@@ -388,7 +358,7 @@ def llama_processing_layer(
     redis_store
 ):
     """Unified layer: One LLM call to rule them all."""
-    
+
     # Get current summary for context
     raw_current = redis_store.get(f"call:{client_id}:summary")
     current_obj = parse_json_or_fallback(raw_current, {"bullets": [], "crm_paragraph": ""})
@@ -422,30 +392,78 @@ A promotion is relevant only when it:
 
 JSON SCHEMA:
 {{
-  "call_rolling_summary": {{
-    "bullets": [{{ "client_issue": "...", "agent_action": "...", "next_step": "..." }}],
-    "crm_paragraph": "..."
-  }},
-  "client_history_summary": {{ "history_summary": "..." }},
-  "promotion_recommendations": {{
-    "recommendations": [{{ "promo_id": "...", "name": "...", "reason": "..." }}],
+    "call_rolling_summary": {
+    "bullets": [{ "client_issue": "...", "agent_action": "...", "next_step": "..." }],
+    "crm_paragraph": "...",
+
+    "call_reason": "...",
+    "call_outcome": "...",
+    "actions_performed": ["..."],
+
+    "interactions": [
+      {
+    "interaction_type": "Call or Bank visit",
+        "date_of_interaction": "...",
+        "interaction_description": "...",
+        "interaction_reason": "...",
+        "interaction_outcome": "...",
+        "agent_action": "...",
+        "unresolved_issue": "..."
+      }
+    ]
+  },
+
+  "client_history_summary": {
+    "history_summary": "...",
+    "client_summary": "..."
+  },
+
+  "promotion_recommendations": {
+    "recommendations": [
+      {
+    "promo_id": "...",
+        "name": "...",
+        "promotion_description": "...",
+        "eligibility_criteria": "...",
+        "fulfillment_steps": ["..."],
+        "expiry_date": "...",
+        "promotion_code": "...",
+        "reason": "..."
+      }
+    ],
     "no_relevant_flag": bool
-  }}
+  }
 }}
 [/INST]
 """
     # Standardize on a single generation
     raw_output = llama_generate(prompt, max_tokens=700, temperature=0.1)
-    
+
     # Parse and Validate
     result = parse_json_or_fallback(raw_output, fallback={})
-    
+
     # Safety fallback for missing keys
     return {
-        "call_rolling_summary": result.get("call_rolling_summary", {"bullets": [], "crm_paragraph": "Parsing error"}),
-        "client_history_summary": result.get("client_history_summary", {"history_summary": client_history_summary}),
+        "call_rolling_summary": result.get(
+            "call_rolling_summary",
+            {
+                "bullets": [],
+                "crm_paragraph": "Parsing error",
+                "call_reason": "",
+                "call_outcome": "",
+                "actions_performed": [],
+                "interactions": []
+            }
+        ),
+        "client_history_summary": {
+            "history_summary": result.get("client_history_summary", {}).get("history_summary", client_history_summary),
+            "client_summary": result.get("client_history_summary", {}).get(
+                "client_summary",
+                result.get("client_history_summary", {}).get("history_summary", client_history_summary)
+            )
+        },
         "promotion_recommendations": validate_promotions(
-            result.get("promotion_recommendations", {}), 
+            result.get("promotion_recommendations", {}),
             promotion_catalog
         )
     }
@@ -464,6 +482,7 @@ Schema:
 Text:
 {text}
 """
+
 
 def process_new_chunk(
     client_id,
@@ -486,6 +505,7 @@ def process_new_chunk(
 
     return result
 
+
 def chunk_text_by_tokens(text, chunk_size=700, overlap=80):
     tokenizer, _ = _load_model()
     ids = tokenizer.encode(text)
@@ -502,6 +522,7 @@ def chunk_text_by_tokens(text, chunk_size=700, overlap=80):
             start = 0
     return chunks
 
+
 def summarize_chunk_to_json(chunk_text, max_tokens):
     prompt = build_json_prompt(chunk_text)
     raw = llama_generate(prompt, max_tokens=max_tokens, temperature=0.2)
@@ -513,6 +534,7 @@ def summarize_chunk_to_json(chunk_text, max_tokens):
             "key_points": []
         }
     )
+
 
 def merge_chunk_summaries(results):
     summaries = []
@@ -539,6 +561,7 @@ def merge_chunk_summaries(results):
     }
     return final
 
+
 def summarize_long_text(text, chunk_size=1200, overlap=50):
     chunks = chunk_text_by_tokens(text, chunk_size=chunk_size, overlap=overlap)
     results = []
@@ -546,6 +569,7 @@ def summarize_long_text(text, chunk_size=1200, overlap=50):
         r = summarize_chunk_to_json(ch, max_tokens=256)
         results.append(r)
     return merge_chunk_summaries(results)
+
 
 # --- Mock Functions for Testing ---
 
@@ -555,11 +579,14 @@ def _mock_call_summarizer(chunk_text, current_call_summary_text=""):
         "crm_paragraph": f"Mock: {chunk_text[:50]}..."
     }
 
+
 def _mock_client_summarizer(chunk_text, client_profile, current_history):
     return {"history_summary": current_history or "Mock history"}
 
+
 def _mock_promoter(chunk_text, client_profile, promotion_catalog):
     return {"recommendations": [], "no_relevant_flag": True}
+
 
 def _mock_llama_processing_layer(client_id, chunk_text, client_profile, client_history_summary, promotion_catalog, redis_store):
     return {
