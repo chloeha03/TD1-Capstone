@@ -95,3 +95,27 @@ export const saveCallSummary = async (
     throw error;
   }
 };
+
+// --------------------------------------------------------------------------
+// Customer history retrieval
+export interface CustomerHistory {
+  customer_id: number;
+  profile: any;
+  interactions: Array<{ date?: string; type?: string; reason?: string; agentAction?: string; outcome?: string }>; // loosened
+  promotions_offered: any[];
+}
+
+export const getCustomerHistory = async (
+  customerId: number
+): Promise<CustomerHistory> => {
+  try {
+    const response = await fetch(`${SUMMARIZER_BASE_URL}/customer_history/${customerId}`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch customer history: ${response.statusText}`);
+    }
+    return await response.json();
+  } catch (error) {
+    console.error("Error fetching customer history:", error);
+    throw error;
+  }
+};

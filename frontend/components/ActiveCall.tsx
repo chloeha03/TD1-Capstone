@@ -2,47 +2,46 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Phone, User, ShieldCheck, X, Check, Wallet, Sparkles, AlertCircle, Save, MicOff, Pause, PhoneForwarded, ChevronDown, Mail, MapPin, Calendar, Building2, History, ExternalLink, TrendingUp, Info, Clock, MousePointer2, ListChecks, CalendarClock, UserCheck, CreditCard, ArrowRightLeft, Search, ArrowLeft, ChevronRight, Mic, Loader2 } from 'lucide-react';
 import { Customer, CallStep, Interaction } from '../types';
-import { getCallSummary, saveCallSummary, CallSummary } from '../services/summaryService';
+import { getCallSummary, saveCallSummary, CallSummary, getCallPromotions, getCustomerHistory, CustomerHistory } from '../services/summaryService';
 import { useAudioRecorder } from '../services/useAudioRecorder';
 
-const mockCustomer: Customer = {
+// placeholder interactions used until API returns data
+const mockInteractions: Interaction[] = [
+  {
+    date: 'Oct 22, 2024',
+    type: 'Bank Visit',
+    reason: 'Mortgage Inquiry',
+    agentAction: 'Collected physical ID and pay stubs. Initiated preliminary credit check.',
+    outcome: 'Pending Documents'
+  },
+  {
+    date: 'Oct 20, 2024',
+    type: 'Call',
+    reason: 'Technical Support',
+    agentAction: 'Walked customer through 2FA reset process and app cache clearance.',
+    outcome: 'Resolved'
+  },
+  {
+    date: 'Oct 15, 2024',
+    type: 'Call',
+    reason: 'Billing Dispute',
+    agentAction: 'Verified October billing statement. Noted $35 surcharge mismatch.',
+    outcome: 'Escalated'
+  }
+];
+
+// default customer until API populates
+const defaultCustomer: Customer = {
   id: 'CUST-8492',
-  name: 'Sarah Jenkins',
-  email: 'sarah.jenkins@example.com',
-  phone: '+1 (555) 012-3456',
-  address: '123 Emerald Way, Toronto, ON M5H 2N2',
-  dob: 'May 14, 1982',
-  accountLevel: 'Premium',
-  lastInteraction: '2 days ago',
-  sentiment: 'Negative',
-  issue: 'Recurring billing discrepancy on Enterprise Plan upgrade',
-  jointHolders: ['Mark Jenkins'],
-  //chloe active promotions
-  activePromotions: ['Loyalty Credit Active', 'Platinum Savings Qualified'],
-  //chloe client summary
-  interactions: [
-    {
-      date: 'Oct 22, 2024',
-      type: 'Bank Visit',
-      reason: 'Mortgage Inquiry',
-      agentAction: 'Collected physical ID and pay stubs. Initiated preliminary credit check.',
-      outcome: 'Pending Documents'
-    },
-    {
-      date: 'Oct 20, 2024',
-      type: 'Call',
-      reason: 'Technical Support',
-      agentAction: 'Walked customer through 2FA reset process and app cache clearance.',
-      outcome: 'Resolved'
-    },
-    {
-      date: 'Oct 15, 2024',
-      type: 'Call',
-      reason: 'Billing Dispute',
-      agentAction: 'Verified October billing statement. Noted $35 surcharge mismatch.',
-      outcome: 'Escalated'
-    }
-  ]
+  name: 'Anonymous',
+  email: 'unknown@example.com',
+  phone: '+1 (000) 000-0000',
+  address: 'N/A',
+  dob: 'N/A',
+  accountLevel: 'Standard',
+  lastInteraction: '',
+  sentiment: 'Neutral',
+  issue: '',
 };
 
 const mockTransactions = [
@@ -101,6 +100,12 @@ const ActiveCall: React.FC = () => {
   // Summary Detailed View State
   const [selectedSummaryInteraction, setSelectedSummaryInteraction] = useState<number | null>(null);
 
+  // Customer & history
+  const [customer, setCustomer] = useState<Customer>(defaultCustomer);
+  const [customerHistory, setCustomerHistory] = useState<CustomerHistory | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+
+
   // Phone Controls
   const [isMuted, setIsMuted] = useState(false);
   const [isOnHold, setIsOnHold] = useState(false);
@@ -120,6 +125,7 @@ const ActiveCall: React.FC = () => {
 
   // --- Audio Recording & Call ID ---
   const [callId] = useState(() => `call-${Date.now()}`);
+  // TODO: replace hardcoded id with real selection/context
   const [customerId] = useState(1);
   const { isRecording, wsConnected, transcriptChunks, error: audioError, startRecording, stopRecording } = useAudioRecorder();
   const recapSummaryRef = useRef<HTMLTextAreaElement>(null);
@@ -138,6 +144,36 @@ const ActiveCall: React.FC = () => {
     }
     return () => clearInterval(interval);
   }, [callStep]);
+
+  // fetch customer history once when component mounts or customerId changes
+  useEffect(() => {
+    const loadHistory = async () => {
+      try {
+        setHistoryError(null);
+        const hist = await getCustomerHistory(customerId);
+        setCustomerHistory(hist);
+
+        // map profile fields -> Customer shape
+        const prof = hist.profile || {};
+        setCustomer(prev => ({
+          ...prev,
+          id: String(hist.customer_id),
+          name: prof.name || prev.name,
+          email: prof.phone_number ? prev.email : prev.email, // profile may not include email
+          phone: prof.phone_number || prev.phone,
+          address: prof.address || prev.address,
+          dob: prof.dob || prev.dob,
+          lastInteraction: prof.last_digital_visit || prev.lastInteraction,
+          issue: prof.call_reason || prev.issue,
+        }));
+      } catch (err) {
+        console.error('Failed to load customer history:', err);
+        setHistoryError(err instanceof Error ? err.message : 'Unable to fetch history');
+      }
+    };
+
+    loadHistory();
+  }, [customerId]);
 
   // Start mic recording when call becomes ACTIVE (guarded against StrictMode double-fire)
   const recordingStartedRef = useRef(false);
@@ -206,15 +242,53 @@ const ActiveCall: React.FC = () => {
     }
   };
 
-  // Trigger Promotions after Acknowledging Summary (the "Condition")
+  // --- Promotions --------------------------------------------------------
+  // We now query the backend for a list of promotions instead of blindly
+  // showing the static list after a delay.  The showPromos flag is only
+  // flipped once the async request returns with relevant recommendations.
+  const [apiPromotions, setApiPromotions] = useState<any[]>([]);
+  const [promotionsLoading, setPromotionsLoading] = useState(false);
+
   useEffect(() => {
     if (callStep === 'ACTIVE') {
-      const timer = setTimeout(() => {
-        setShowPromos(true);
-      }, 3000); // 3 seconds after summary is closed
-      return () => clearTimeout(timer);
+      let cancelled = false;
+      const loadPromos = async () => {
+        try {
+          setPromotionsLoading(true);
+          const result = await getCallPromotions(callId);
+          if (cancelled) return;
+
+          // only show if service returns something useful
+          if (!result.no_relevant_flag && result.recommendations?.length) {
+            // normalize to the existing promo interface expected by the UI
+            const normalized = result.recommendations.map((r: any, idx: number) => ({
+              id: idx + 1, // temporary key; real app would use unique id
+              title: r.name || r.promo_id,
+              description: r.description || '',
+              code: r.promo_id || '',
+              eligibility: '',
+              steps: [],
+              expiry: ''
+            }));
+            setApiPromotions(normalized);
+            setShowPromos(true);
+          }
+        } catch (err) {
+          console.error('Failed to load promotions:', err);
+        } finally {
+          if (!cancelled) setPromotionsLoading(false);
+        }
+      };
+
+      loadPromos();
+      return () => {
+        cancelled = true;
+      };
     }
-  }, [callStep]);
+  }, [callStep, callId]);
+
+
+
 
   const handleMouseDown = (e: React.MouseEvent) => {
     if (callStep !== 'SUMMARY') return;
@@ -258,8 +332,15 @@ const ActiveCall: React.FC = () => {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const selectedPromo = promotionsList.find(p => p.id === selectedPromoId);
-  const visiblePromos = promotionsList.filter(p => !dismissedPromoIds.includes(p.id));
+  const selectedPromo = (apiPromotions.length ? apiPromotions : promotionsList).find(p => p.id === selectedPromoId);
+  const visiblePromos = (apiPromotions.length ? apiPromotions : promotionsList).filter(p => !dismissedPromoIds.includes(p.id));
+
+  // interactions pulled from server or fallback to mock list
+  // once history has been fetched we trust it (even if empty) so that
+  // agents see the real database state instead of the hard‑coded examples.
+  const interactionsToDisplay: Interaction[] =
+    customerHistory ? (customerHistory.interactions as Interaction[]) : mockInteractions;
+
 
   return (
     <div className="flex flex-col h-full p-6 relative gap-6 overflow-hidden select-none">
@@ -281,12 +362,12 @@ const ActiveCall: React.FC = () => {
             <div className="flex items-center gap-10">
               <div className="min-w-[180px]">
                 <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
-                  {mockCustomer.name}
-                  <span className="bg-emerald-50 text-emerald-700 text-[10px] px-2 py-0.5 rounded-full border border-emerald-100 font-bold uppercase">{mockCustomer.accountLevel}</span>
+                  {customer.name}
+                  <span className="bg-emerald-50 text-emerald-700 text-[10px] px-2 py-0.5 rounded-full border border-emerald-100 font-bold uppercase">{customer.accountLevel}</span>
                 </h2>
                 <div className="flex flex-col gap-1 mt-1">
-                  <span className="text-sm text-slate-500 font-mono flex items-center gap-1.5"><Phone className="w-3 h-3 text-slate-400" /> {mockCustomer.phone}</span>
-                  <span className="text-sm text-slate-500 flex items-center gap-1.5"><Mail className="w-3 h-3 text-slate-400" /> {mockCustomer.email}</span>
+                  <span className="text-sm text-slate-500 font-mono flex items-center gap-1.5"><Phone className="w-3 h-3 text-slate-400" /> {customer.phone}</span>
+                  <span className="text-sm text-slate-500 flex items-center gap-1.5"><Mail className="w-3 h-3 text-slate-400" /> {customer.email}</span>
                 </div>
               </div>
 
@@ -295,11 +376,11 @@ const ActiveCall: React.FC = () => {
               <div className="grid grid-cols-2 gap-x-12 items-center">
                 <div>
                   <span className="text-[10px] text-slate-400 font-bold uppercase block tracking-wider mb-1">Mailing Address</span>
-                  <span className="text-sm text-slate-700 flex items-center gap-2 font-medium"><MapPin className="w-4 h-4 text-emerald-600" /> {mockCustomer.address}</span>
+                  <span className="text-sm text-slate-700 flex items-center gap-2 font-medium"><MapPin className="w-4 h-4 text-emerald-600" /> {customer.address}</span>
                 </div>
                 <div>
                   <span className="text-[10px] text-slate-400 font-bold uppercase block tracking-wider mb-1">Date of Birth</span>
-                  <span className="text-sm text-slate-700 flex items-center gap-2 font-medium"><Calendar className="w-4 h-4 text-emerald-600" /> {mockCustomer.dob}</span>
+                  <span className="text-sm text-slate-700 flex items-center gap-2 font-medium"><Calendar className="w-4 h-4 text-emerald-600" /> {customer.dob}</span>
                 </div>
               </div>
             </div>
@@ -519,7 +600,7 @@ const ActiveCall: React.FC = () => {
               <div
                 key={promo.id}
                 className="bg-white rounded-xl shadow-[0_10px_40px_rgb(0,0,0,0.18)] border border-emerald-100 p-4 flex items-center justify-between transform transition-all hover:-translate-y-1 animate-in slide-in-from-bottom-6 duration-300 group pointer-events-auto"
-                style={{ marginBottom: index * -8, zIndex: promotionsList.length - index }}
+                style={{ marginBottom: index * -8, zIndex: visiblePromos.length - index }}
               >
                 <div className="flex items-center gap-4 flex-1">
                   <div className="bg-emerald-100 p-2.5 rounded-lg text-emerald-700 group-hover:bg-emerald-600 group-hover:text-white transition-colors">
@@ -585,9 +666,12 @@ const ActiveCall: React.FC = () => {
                       <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
                         <Clock className="w-3.5 h-3.5" /> Recent Interactions
                       </h4>
+                      {historyError && (
+                        <p className="text-xs text-rose-600 mt-1">Failed to load history: {historyError}</p>
+                      )}
                     </div>
                     <div className="space-y-4 relative before:absolute before:left-[11px] before:top-2 before:bottom-2 before:w-px before:bg-slate-100">
-                      {mockCustomer.interactions?.map((it, idx) => (
+                      {interactionsToDisplay.map((it, idx) => (
                         <button
                           key={idx}
                           onClick={() => setSelectedSummaryInteraction(idx)}
@@ -635,19 +719,19 @@ const ActiveCall: React.FC = () => {
                   <div className="space-y-5">
                     <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 shadow-sm">
                       <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Interaction Reason</label>
-                      <p className="text-sm font-bold text-slate-800">{mockCustomer.interactions![selectedSummaryInteraction].reason}</p>
+                      <p className="text-sm font-bold text-slate-800">{interactionsToDisplay[selectedSummaryInteraction].reason}</p>
                     </div>
 
                     <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
                       <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Agent Action</label>
                       <p className="text-sm text-slate-700 leading-relaxed font-medium">
-                        {mockCustomer.interactions![selectedSummaryInteraction].agentAction}
+                        {interactionsToDisplay[selectedSummaryInteraction].agentAction}
                       </p>
                     </div>
 
                     <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-4 shadow-sm">
                       <label className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest block mb-2">Interaction Outcome</label>
-                      <p className="text-sm font-bold text-emerald-800">{mockCustomer.interactions![selectedSummaryInteraction].outcome}</p>
+                      <p className="text-sm font-bold text-emerald-800">{interactionsToDisplay[selectedSummaryInteraction].outcome}</p>
                     </div>
                   </div>
                 </div>
