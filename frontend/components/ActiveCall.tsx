@@ -153,15 +153,22 @@ const ActiveCall: React.FC = () => {
         const hist = await getCustomerHistory(customerId);
         setCustomerHistory(hist);
 
-        // map profile fields -> Customer shape
+        // map profile fields -> Customer shape (backend may return address/objects; React needs strings)
         const prof = hist.profile || {};
+        const rawAddress = prof.address;
+        const addressStr =
+          typeof rawAddress === 'string'
+            ? rawAddress
+            : rawAddress && typeof rawAddress === 'object'
+              ? [rawAddress.city, rawAddress.postal_code].filter(Boolean).join(', ') || '—'
+              : (prof.address != null ? String(prof.address) : undefined);
         setCustomer(prev => ({
           ...prev,
           id: String(hist.customer_id),
           name: prof.name || prev.name,
-          email: prof.phone_number ? prev.email : prev.email, // profile may not include email
+          email: prof.phone_number ? prev.email : prev.email,
           phone: prof.phone_number || prev.phone,
-          address: prof.address || prev.address,
+          address: addressStr ?? prev.address,
           dob: prof.dob || prev.dob,
           lastInteraction: prof.last_digital_visit || prev.lastInteraction,
           issue: prof.call_reason || prev.issue,
@@ -336,10 +343,11 @@ const ActiveCall: React.FC = () => {
   const visiblePromos = (apiPromotions.length ? apiPromotions : promotionsList).filter(p => !dismissedPromoIds.includes(p.id));
 
   // interactions pulled from server or fallback to mock list
-  // once history has been fetched we trust it (even if empty) so that
-  // agents see the real database state instead of the hard‑coded examples.
-  const interactionsToDisplay: Interaction[] =
-    customerHistory ? (customerHistory.interactions as Interaction[]) : mockInteractions;
+  // ensure we always have an array to avoid crash when API returns null/undefined or wrong shape
+  const rawInteractions = customerHistory?.interactions;
+  const interactionsToDisplay: Interaction[] = Array.isArray(rawInteractions)
+    ? (rawInteractions as Interaction[])
+    : mockInteractions;
 
 
   return (
@@ -671,26 +679,31 @@ const ActiveCall: React.FC = () => {
                       )}
                     </div>
                     <div className="space-y-4 relative before:absolute before:left-[11px] before:top-2 before:bottom-2 before:w-px before:bg-slate-100">
-                      {interactionsToDisplay.map((it, idx) => (
-                        <button
-                          key={idx}
-                          onClick={() => setSelectedSummaryInteraction(idx)}
-                          className="w-full flex gap-4 relative group text-left outline-none"
-                        >
-                          <div className={`w-[23px] h-[23px] rounded-full flex items-center justify-center flex-shrink-0 z-10 transition-colors ${idx === 0 ? 'bg-emerald-500 text-white' : 'bg-white border border-slate-200 text-slate-400'} group-hover:bg-emerald-600 group-hover:text-white`}>
-                            {it.type === 'Call' ? <Phone className="w-3 h-3" /> : <Building2 className="w-3 h-3" />}
-                          </div>
-                          <div className="flex-1 bg-slate-50/50 p-3 rounded-xl border border-transparent hover:border-slate-200 hover:bg-white transition-all flex items-center justify-between">
-                            <div>
-                              <div className="flex justify-between items-center mb-1">
-                                <span className="text-xs font-bold text-slate-800">{it.type}: {it.reason}</span>
-                              </div>
-                              <span className="text-[10px] font-medium text-slate-400">{it.date}</span>
+                      {interactionsToDisplay.map((it, idx) => {
+                        const reason = (it as any).reason ?? (it as any).summary ?? '—';
+                        const type = (it as any).type ?? 'Call';
+                        const date = (it as any).date != null ? String((it as any).date).slice(0, 10) : '';
+                        return (
+                          <button
+                            key={idx}
+                            onClick={() => setSelectedSummaryInteraction(idx)}
+                            className="w-full flex gap-4 relative group text-left outline-none"
+                          >
+                            <div className={`w-[23px] h-[23px] rounded-full flex items-center justify-center flex-shrink-0 z-10 transition-colors ${idx === 0 ? 'bg-emerald-500 text-white' : 'bg-white border border-slate-200 text-slate-400'} group-hover:bg-emerald-600 group-hover:text-white`}>
+                              {type === 'Call' ? <Phone className="w-3 h-3" /> : <Building2 className="w-3 h-3" />}
                             </div>
-                            <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-emerald-500 transition-colors" />
-                          </div>
-                        </button>
-                      ))}
+                            <div className="flex-1 bg-slate-50/50 p-3 rounded-xl border border-transparent hover:border-slate-200 hover:bg-white transition-all flex items-center justify-between">
+                              <div>
+                                <div className="flex justify-between items-center mb-1">
+                                  <span className="text-xs font-bold text-slate-800">{type}: {reason}</span>
+                                </div>
+                                <span className="text-[10px] font-medium text-slate-400">{date}</span>
+                              </div>
+                              <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-emerald-500 transition-colors" />
+                            </div>
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
 
@@ -717,22 +730,26 @@ const ActiveCall: React.FC = () => {
                   </button>
 
                   <div className="space-y-5">
-                    <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 shadow-sm">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Interaction Reason</label>
-                      <p className="text-sm font-bold text-slate-800">{interactionsToDisplay[selectedSummaryInteraction].reason}</p>
-                    </div>
+                    {interactionsToDisplay[selectedSummaryInteraction] && (
+                      <>
+                        <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 shadow-sm">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Interaction Reason</label>
+                          <p className="text-sm font-bold text-slate-800">{(interactionsToDisplay[selectedSummaryInteraction] as any).reason ?? (interactionsToDisplay[selectedSummaryInteraction] as any).summary ?? '—'}</p>
+                        </div>
 
-                    <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Agent Action</label>
-                      <p className="text-sm text-slate-700 leading-relaxed font-medium">
-                        {interactionsToDisplay[selectedSummaryInteraction].agentAction}
-                      </p>
-                    </div>
+                        <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Agent Action</label>
+                          <p className="text-sm text-slate-700 leading-relaxed font-medium">
+                            {(interactionsToDisplay[selectedSummaryInteraction] as any).agentAction ?? (interactionsToDisplay[selectedSummaryInteraction] as any).agent_action ?? '—'}
+                          </p>
+                        </div>
 
-                    <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-4 shadow-sm">
-                      <label className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest block mb-2">Interaction Outcome</label>
-                      <p className="text-sm font-bold text-emerald-800">{interactionsToDisplay[selectedSummaryInteraction].outcome}</p>
-                    </div>
+                        <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-4 shadow-sm">
+                          <label className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest block mb-2">Interaction Outcome</label>
+                          <p className="text-sm font-bold text-emerald-800">{(interactionsToDisplay[selectedSummaryInteraction] as any).outcome ?? '—'}</p>
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
               )}

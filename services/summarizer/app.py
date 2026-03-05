@@ -433,11 +433,11 @@ def get_customer_history(customer_id: int):
         if not customer:
             raise HTTPException(status_code=404, detail="Customer not found")
 
-        # 2. Fetch Interactions
-        interactions = interaction_repo.get_for_customer(customer_id)
+        # 2. Fetch Interactions (ensure list for frontend)
+        interactions = interaction_repo.get_for_customer(customer_id) or []
 
-        # 3. Fetch Promotions Offered (via repository)
-        offers = promo_offer_repo.get_for_customer(customer_id)
+        # 3. Fetch Promotions Offered (ensure list for frontend)
+        offers = promo_offer_repo.get_for_customer(customer_id) or []
 
         # 4. Format profile cleanly
         profile = {
