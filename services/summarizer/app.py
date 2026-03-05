@@ -241,22 +241,130 @@ async def lifespan(app: FastAPI):
             db.execute("TRUNCATE interaction, promotionoffer, promotion, customer RESTART IDENTITY CASCADE;")
 
             # 2. Seed Customers
+            # Customer 1 – Random caller (wrong number)
             customer_repo.upsert_from_payload({
                 "customer_id": 1,
-                "first_name": "John",
-                "last_name": "Smith",
-                "total_assets": 150000.00,
-                "address": None, "employment_info": None, "accounts": [],
-                "call_reason": None, "contact_center": None
+                "first_name": "Alex",
+                "last_name": "Brown",
+                "preferred_name": None,
+                "phone_number": "4165550111",
+                "address": {
+                    "city": "Toronto",
+                    "postal_code": "M5V2T6"
+                },
+                "employment_info": None,
+                "total_assets": 0.00,
+                "financial_data": {
+                    "accounts": []
+                },
+                "call_reason": None,
+                "contact_center": "Toronto"
             })
 
+            # Customer 2 – Upset client (lost debit card scenario)
             customer_repo.upsert_from_payload({
                 "customer_id": 2,
-                "first_name": "Jane",
-                "last_name": "Doe",
-                "total_assets": 250000.00,
-                "address": None, "employment_info": None, "accounts": [],
-                "call_reason": None, "contact_center": None
+                "first_name": "Maria",
+                "last_name": "Garcia",
+                "preferred_name": "Maria",
+                "phone_number": "4165550212",
+                "address": {
+                    "city": "Toronto",
+                    "postal_code": "M5V2T6"
+                },
+                "employment_info": {
+                    "status": "Employed",
+                    "employer": "RetailCo",
+                    "position": "Supervisor"
+                },
+                "total_assets": 18000.00,
+                "financial_data": {
+                    "accounts": [
+                        {"type": "Checking", "balance": 2500},
+                        {"type": "Savings", "balance": 15500}
+                    ]
+                },
+                "call_reason": None,
+                "contact_center": "Toronto"
+            })
+
+            # Customer 3 – University student
+            customer_repo.upsert_from_payload({
+                "customer_id": 3,
+                "first_name": "Kevin",
+                "last_name": "Li",
+                "preferred_name": "Kevin",
+                "phone_number": "6475551099",
+                "address": {
+                    "city": "Toronto",
+                    "postal_code": "M4Y1A7"
+                },
+                "employment_info": {
+                    "status": "Student",
+                    "school": "University of Toronto",
+                    "part_time_job": "Campus Library"
+                },
+                "total_assets": 3200.00,
+                "financial_data": {
+                    "accounts": [
+                        {"type": "Student Checking", "balance": 800},
+                        {"type": "Savings", "balance": 2400}
+                    ]
+                },
+                "call_reason": None,
+                "contact_center": "Toronto"
+            })
+
+            # Customer 4 – Wealth client
+            customer_repo.upsert_from_payload({
+                "customer_id": 4,
+                "first_name": "Robert",
+                "last_name": "Chen",
+                "preferred_name": "Rob",
+                "phone_number": "4165558891",
+                "address": {
+                    "city": "North York",
+                    "postal_code": "M2N5S2"
+                },
+                "employment_info": {
+                    "status": "Business Owner",
+                    "industry": "Logistics"
+                },
+                "total_assets": 850000.00,
+                "financial_data": {
+                    "accounts": [
+                        {"type": "Checking", "balance": 40000},
+                        {"type": "Investment", "balance": 810000}
+                    ]
+                },
+                "call_reason": None,
+                "contact_center": "Toronto"
+            })
+
+            # Customer 5 – Mortgage client
+            customer_repo.upsert_from_payload({
+                "customer_id": 5,
+                "first_name": "Emily",
+                "last_name": "Watson",
+                "preferred_name": "Emily",
+                "phone_number": "4165553333",
+                "address": {
+                    "city": "Toronto",
+                    "postal_code": "M6J3K1"
+                },
+                "employment_info": {
+                    "status": "Employed",
+                    "employer": "City of Toronto"
+                },
+                "total_assets": 220000.00,
+                "financial_data": {
+                    "accounts": [
+                        {"type": "Checking", "balance": 6000},
+                        {"type": "Mortgage", "balance": 480000}
+                    ]
+                },
+                "call_reason": None,
+                "contact_center": "Toronto"
             })
 
             # 3. Seed Promotions
