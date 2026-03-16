@@ -142,6 +142,27 @@ def llama_generate(prompt, max_tokens=256, temperature=0.2):
 
 # --- JSON Utilities ---
 
+def _extract_json_candidate(text):
+    """Get the best substring that might be JSON (for small models that echo prompt or add extra text)."""
+    t = text.strip()
+    # Prefer content after last [/INST] (model often echoes the prompt)
+    for marker in ("[/INST]", "[/inst]"):
+        idx = t.rfind(marker)
+        if idx != -1:
+            t = t[idx + len(marker) :].strip()
+            break
+    # Prefer content inside ```json ... ``` or ``` ... ```
+    for opener in ("```json", "```"):
+        start = t.find(opener)
+        if start != -1:
+            start = t.find("\n", start) + 1 if t.find("\n", start) != -1 else start + len(opener)
+            end = t.find("```", start)
+            if end != -1:
+                t = t[start:end].strip()
+            break
+    return t
+
+
 def parse_json_or_fallback(raw_text, fallback):
     if raw_text is None:
         return fallback
@@ -157,9 +178,24 @@ def parse_json_or_fallback(raw_text, fallback):
         s = text.find("{")
         e = text.rfind("}")
         if s != -1 and e != -1 and e > s:
-            return json.loads(text[s:e+1])
+            return json.loads(text[s : e + 1])
     except Exception:
         pass
+
+    # Try again on extracted candidate (helps when small model echoes prompt)
+    candidate = _extract_json_candidate(text)
+    if candidate != text:
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+        try:
+            sc = candidate.find("{")
+            ec = candidate.rfind("}")
+            if sc != -1 and ec != -1 and ec > sc:
+                return json.loads(candidate[sc : ec + 1])
+        except Exception:
+            pass
 
     return fallback
 
@@ -502,7 +538,7 @@ JSON SCHEMA:
             "call_rolling_summary",
             {
                 "bullets": [],
-                "crm_paragraph": "Parsing error",
+                "crm_paragraph": "Summary could not be generated for this segment (model output format issue).",
                 "call_reason": "",
                 "call_outcome": "",
                 "actions_performed": [],
