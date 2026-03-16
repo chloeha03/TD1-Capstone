@@ -13,8 +13,8 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 
 # --- Configuration ---
-MODEL_ID = os.getenv("MODEL_ID", "meta-llama/Meta-Llama-3.1-8B-Instruct")
-LOCAL_DIR = os.getenv("LOCAL_MODEL_DIR", "/app/models/meta-llama-3.1-8b-instruct")
+MODEL_ID = os.getenv("MODEL_ID", "TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+LOCAL_DIR = os.getenv("LOCAL_MODEL_DIR", "/app/models/tinyllama-1.1b-chat-v1.0")
 HF_TOKEN = os.getenv("HF_TOKEN")
 USE_MOCK = os.getenv("USE_MOCK_LLM", "false").lower() == "true"
 
