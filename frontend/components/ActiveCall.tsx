@@ -269,7 +269,7 @@ const ActiveCall: React.FC = () => {
           if (!result.no_relevant_flag && result.recommendations?.length) {
             // normalize to the existing promo interface expected by the UI
             const normalized = result.recommendations.map((r: any, idx: number) => ({
-              id: idx + 1, // temporary key; real app would use unique id
+              id: r.promo_id, // temporary key; real app would use unique id
               title: r.name || r.promo_id,
               description: r.description || '',
               code: r.promo_id || '',
@@ -277,8 +277,16 @@ const ActiveCall: React.FC = () => {
               steps: [],
               expiry: ''
             }));
-            setApiPromotions(normalized);
-            setShowPromos(true);
+            setApiPromotions(prev => {
+            const existingCodes = new Set(prev.map(p => p.code));
+            const newPromos = normalized.filter(p => !existingCodes.has(p.code));
+
+            if (newPromos.length > 0) {
+              setShowPromos(true);
+            }
+
+            return [...prev, ...newPromos];
+          });
           }
         } catch (err) {
           console.error('Failed to load promotions:', err);
@@ -288,8 +296,12 @@ const ActiveCall: React.FC = () => {
       };
 
       loadPromos();
+
+      // poll every 5 seconds
+      const interval = setInterval(loadPromos, 5000);
       return () => {
         cancelled = true;
+        clearInterval(interval);
       };
     }
   }, [callStep, callId]);
