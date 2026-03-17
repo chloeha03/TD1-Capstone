@@ -268,15 +268,36 @@ const ActiveCall: React.FC = () => {
           // only show if service returns something useful
           if (!result.no_relevant_flag && result.recommendations?.length) {
             // normalize to the existing promo interface expected by the UI
-            const normalized = result.recommendations.map((r: any, idx: number) => ({
-              id: r.promo_id, // temporary key; real app would use unique id
-              title: r.name || r.promo_id,
-              description: r.description || '',
-              code: r.promo_id || '',
-              eligibility: '',
-              steps: [],
-              expiry: ''
-            }));
+            const normalized = result.recommendations.map((r: any) => {
+
+              // Parse eligibility string if possible
+              let eligibilityText = r.eligibility_criteria;
+
+              try {
+                eligibilityText = JSON.stringify(
+                  JSON.parse(
+                    r.eligibility_criteria
+                      ?.replace(/'/g, '"')
+                      .replace(/True/g, "true")
+                      .replace(/False/g, "false")
+                  ),
+                  null,
+                  2
+                );
+              } catch {
+                eligibilityText = r.eligibility_criteria;
+              }
+
+              return {
+                id: Number(r.promo_id),   // <-- convert string to number
+                title: r.name,
+                description: r.promotion_description,
+                code: r.promotion_code || r.promo_id,
+                eligibility: eligibilityText,
+                steps: r.fulfillment_steps || [],
+                expiry: r.expiry_date || "No expiry"
+              };
+            });
             setApiPromotions(prev => {
             const existingCodes = new Set(prev.map(p => p.code));
             const newPromos = normalized.filter(p => !existingCodes.has(p.code));
