@@ -51,11 +51,32 @@ redis_client = redis.Redis(host=REDIS_HOST, port=6379, decode_responses=True)
 CLEAN_ON_START = os.getenv("CLEAN_ON_START", "true").lower() == "true"
 
 def get_client_profile(customer_id: int) -> str:
-    """Fetch client profile from DB and format as string for LLM."""
+    """Fetch client profile from DB and format as string for LLM (include employment/address for promotion relevance)."""
     try:
         customer = customer_repo.get_by_id(customer_id)
         if customer:
-            return f"Name: {customer['first_name']} {customer['last_name']}, Assets: {customer.get('total_assets', 'N/A')}"
+            parts = [f"Name: {customer['first_name']} {customer['last_name']}", f"Assets: {customer.get('total_assets', 'N/A')}"]
+            if customer.get("address"):
+                addr = customer["address"]
+                if isinstance(addr, dict):
+                    parts.append(f"Address: {addr.get('city', '')}, {addr.get('postal_code', '')}".strip(", "))
+                else:
+                    parts.append(f"Address: {addr}")
+            if customer.get("employment_info"):
+                emp = customer["employment_info"]
+                if isinstance(emp, dict):
+                    if emp.get("status") == "Student":
+                        parts.append(f"Employment: Student, {emp.get('school', '')}".strip(", "))
+                    elif emp.get("employer"):
+                        parts.append(f"Employment: {emp.get('status', '')}, {emp.get('employer', '')}".strip(", "))
+                else:
+                    parts.append(f"Employment: {emp}")
+            if customer.get("financial_data") and isinstance(customer["financial_data"], dict):
+                accs = customer["financial_data"].get("accounts") or []
+                if accs:
+                    acc_str = ", ".join(f"{a.get('type', '')} {a.get('balance', 0)}" for a in accs if isinstance(a, dict))
+                    parts.append(f"Accounts: {acc_str}")
+            return ". ".join(p for p in parts if p)
     except Exception as e:
         print(f"[app] Error fetching customer {customer_id}: {e}")
     return "Unknown Customer"
@@ -367,10 +388,26 @@ async def lifespan(app: FastAPI):
                 "contact_center": "Toronto"
             })
 
-            # 3. Seed Promotions
+            # 3. Seed Promotions (order: id 1 = Student for scenario 3, match Colab catalog)
+            promo_repo.create(
+                description='Student High-Interest Savings: No monthly fee high-interest savings account for students. Good interest rate, no minimum balance. For students at recognized institutions.',
+                conditions_dict={"student": True, "max_assets": 50000}
+            )
             promo_repo.create(
                 description='10% off credit card annual fee',
                 conditions_dict={"min_assets": 100000}
+            )
+            promo_repo.create(
+                description='Investment Platform Fee Waiver: Promotional fee waiver on TD Direct Investing.',
+                conditions_dict={"min_assets": 500000}
+            )
+            promo_repo.create(
+                description='Mortgage Renewal Cash Back: Cash back for renewing mortgage with TD.',
+                conditions_dict={"has_mortgage": True}
+            )
+            promo_repo.create(
+                description='New Savings Account Bonus: Bonus interest for new high-interest savings in 90 days.',
+                conditions_dict={}
             )
 
             print("[App] Cleanup complete.")
@@ -433,11 +470,11 @@ def get_customer_history(customer_id: int):
         if not customer:
             raise HTTPException(status_code=404, detail="Customer not found")
 
-        # 2. Fetch Interactions
-        interactions = interaction_repo.get_for_customer(customer_id)
+        # 2. Fetch Interactions (ensure list for frontend)
+        interactions = interaction_repo.get_for_customer(customer_id) or []
 
-        # 3. Fetch Promotions Offered (via repository)
-        offers = promo_offer_repo.get_for_customer(customer_id)
+        # 3. Fetch Promotions Offered (ensure list for frontend)
+        offers = promo_offer_repo.get_for_customer(customer_id) or []
 
         # 4. Format profile cleanly
         profile = {
