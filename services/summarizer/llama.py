@@ -392,8 +392,8 @@ A promotion is relevant only when it:
 
 JSON SCHEMA:
 {{
-    "call_rolling_summary": {
-    "bullets": [{ "client_issue": "...", "agent_action": "...", "next_step": "..." }],
+    "call_rolling_summary": {{
+    "bullets": [{{ "client_issue": "...", "agent_action": "...", "next_step": "..." }}],
     "crm_paragraph": "...",
 
     "call_reason": "...",
@@ -401,7 +401,7 @@ JSON SCHEMA:
     "actions_performed": ["..."],
 
     "interactions": [
-      {
+      {{
     "interaction_type": "Call or Bank visit",
         "date_of_interaction": "...",
         "interaction_description": "...",
@@ -409,18 +409,18 @@ JSON SCHEMA:
         "interaction_outcome": "...",
         "agent_action": "...",
         "unresolved_issue": "..."
-      }
+      }}
     ]
-  },
+  }},
 
-  "client_history_summary": {
+  "client_history_summary": {{
     "history_summary": "...",
     "client_summary": "..."
-  },
+  }},
 
-  "promotion_recommendations": {
+  "promotion_recommendations": {{
     "recommendations": [
-      {
+      {{
     "promo_id": "...",
         "name": "...",
         "promotion_description": "...",
@@ -429,10 +429,10 @@ JSON SCHEMA:
         "expiry_date": "...",
         "promotion_code": "...",
         "reason": "..."
-      }
+      }}
     ],
     "no_relevant_flag": bool
-  }
+  }}
 }}
 [/INST]
 """
